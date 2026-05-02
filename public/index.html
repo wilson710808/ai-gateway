@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🤖 AI Gateway 管理</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#0f0f1a;--sf:#1a1a2e;--sf2:#252540;--bd:#2d2d4a;--ac:#6C5CE7;--ac2:#a29bfe;--ok:#00b894;--wn:#fdcb6e;--er:#e17055;--tx:#e8e8f0;--tx2:#9999b8}
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Noto Sans TC',-apple-system,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}
+    .hdr{background:var(--sf);border-bottom:1px solid var(--bd);padding:16px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100}
+    .hdr h1{font-size:20px;font-weight:600}.hdr h1 span{color:var(--ac)}
+    .sbar{display:flex;gap:20px;font-size:13px;color:var(--tx2)}
+    .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+    .dot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+    .nav{display:flex;gap:4px;padding:16px 24px 0}
+    .nbtn{padding:10px 20px;border:none;background:transparent;color:var(--tx2);font-size:14px;cursor:pointer;border-radius:8px 8px 0 0;transition:.2s;font-family:inherit}
+    .nbtn.act{background:var(--sf2);color:var(--ac2)}
+    .nbtn:hover{color:var(--tx)}
+    .main{padding:24px}
+    .sg{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;margin-bottom:24px}
+    .sc{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:20px;text-align:center}
+    .sv{font-size:28px;font-weight:700;color:var(--ac2)}.sl{font-size:12px;color:var(--tx2);margin-top:4px}
+    .cd{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:20px;margin-bottom:16px}
+    .ct{font-size:16px;font-weight:600;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th{text-align:left;color:var(--tx2);font-weight:500;padding:10px 12px;border-bottom:1px solid var(--bd)}
+    td{padding:10px 12px;border-bottom:1px solid var(--bd)}
+    tr:hover td{background:rgba(108,92,231,.05)}
+    .btn{padding:8px 16px;border:none;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit;font-weight:500;transition:.2s}
+    .bp{background:var(--ac);color:#fff}.bp:hover{background:var(--ac2)}
+    .bd{background:var(--er);color:#fff}.bd:hover{opacity:.8}
+    .bsm{padding:4px 10px;font-size:12px}
+    .bg{background:transparent;color:var(--ac2);border:1px solid var(--bd)}.bg:hover{border-color:var(--ac)}
+    .bge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:500}
+    .bok{background:rgba(0,184,148,.15);color:var(--ok)}.bwn{background:rgba(253,203,110,.15);color:var(--wn)}
+    .ber{background:rgba(225,112,85,.15);color:var(--er)}.bin{background:rgba(108,92,231,.15);color:var(--ac2)}
+    .mo{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center}
+    .md{background:var(--sf2);border:1px solid var(--bd);border-radius:16px;padding:24px;width:90%;max-width:520px}
+    .md h3{margin-bottom:20px;font-size:18px}
+    .fg{margin-bottom:16px}.fg label{display:block;font-size:13px;color:var(--tx2);margin-bottom:6px}
+    .fg input,.fg select,.fg textarea{width:100%;padding:10px 12px;background:var(--sf);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;font-family:inherit}
+    .fg input:focus,.fg select:focus,.fg textarea:focus{outline:none;border-color:var(--ac)}
+    .fg select{appearance:auto;cursor:pointer}
+    .fg .hint{font-size:11px;color:var(--tx2);margin-top:4px}
+    .km{font-family:monospace;font-size:12px;color:var(--tx2)}
+    .pn{display:none}.pn.act{display:block}
+    .cb{background:#0d0d1a;border:1px solid var(--bd);border-radius:8px;padding:16px;font-family:monospace;font-size:12px;line-height:1.5;overflow-x:auto;white-space:pre;color:#c8c8e0;margin-bottom:16px}
+    .empty{text-align:center;padding:40px;color:var(--tx2)}
+    .be{background:rgba(162,155,254,.15);color:var(--ac2);border:1px solid rgba(162,155,254,.3)}
+    .be:hover{background:rgba(162,155,254,.25);border-color:var(--ac2)}
+    .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
+    .key-row-selected td{background:rgba(108,92,231,.08)}
+  </style>
+</head>
+<body>
+
+<div class="hdr">
+  <h1>🤖 <span>AI Gateway</span> 管理</h1>
+  <div class="sbar">
+    <span><span class="dot on"></span>運行中</span>
+    <span id="hK">Keys: —</span>
+    <span id="hQ">佇列: —</span>
+  </div>
+</div>
+
+<div class="nav">
+  <button class="nbtn act" onclick="sw('overview',this)">📊 概覽</button>
+  <button class="nbtn" onclick="sw('keys',this)">🔑 API Keys</button>
+  <button class="nbtn" onclick="sw('apps',this)">📱 應用</button>
+  <button class="nbtn" onclick="sw('sessions',this)">💬 Sessions</button>
+  <button class="nbtn" onclick="sw('summaries',this)">📝 彙整</button>
+  <button class="nbtn" onclick="sw('protocol',this)">📐 客戶端協議</button>
+</div>
+
+<div class="main">
+
+  <!-- 概覽 -->
+  <div id="p-overview" class="pn act">
+    <div class="sg" id="sG"></div>
+    <div class="cd"><div class="ct">最近 Sessions</div>
+    <table><thead><tr><th>Session</th><th>App</th><th>User</th><th>狀態</th><th>耗時</th><th>時間</th></tr></thead>
+    <tbody id="rS"></tbody></table></div>
+  </div>
+
+  <!-- API Keys -->
+  <div id="p-keys" class="pn">
+    <div class="cd"><div class="ct">API Key 池<button class="btn bp" onclick="sM()">+ 新增 Key</button></div>
+    <table><thead><tr><th>ID</th><th>標籤</th><th>Key</th><th>Base URL</th><th>模型</th><th>速率</th><th>調用</th><th>狀態</th><th>操作</th></tr></thead>
+    <tbody id="kT"></tbody></table></div>
+  </div>
+
+  <!-- 應用 -->
+  <div id="p-apps" class="pn">
+    <div class="cd"><div class="ct">已註冊應用</div>
+    <table><thead><tr><th>App ID</th><th>名稱</th><th>用戶數</th><th>創建</th></tr></thead>
+    <tbody id="aT"></tbody></table></div>
+    <div class="cd"><div class="ct">用戶列表</div>
+    <table><thead><tr><th>App</th><th>User ID</th><th>Local Path</th><th>最後活躍</th></tr></thead>
+    <tbody id="uT"></tbody></table></div>
+  </div>
+
+  <!-- Sessions -->
+  <div id="p-sessions" class="pn">
+    <div class="cd"><div class="ct">Session 歷史
+    <select id="sf" onchange="lS()" style="padding:6px 10px;background:var(--sf);border:1px solid var(--bd);border-radius:6px;color:var(--tx);font-size:12px">
+      <option value="">全部</option><option value="completed">completed</option><option value="queued">queued</option><option value="active">active</option><option value="failed">failed</option>
+    </select></div>
+    <table><thead><tr><th>Session ID</th><th>App</th><th>User</th><th>狀態</th><th>查詢</th><th>耗時</th><th>時間</th></tr></thead>
+    <tbody id="sT"></tbody></table></div>
+  </div>
+
+  <!-- 彙整 -->
+  <div id="p-summaries" class="pn">
+    <div class="cd"><div class="ct">用戶彙整<button class="btn bp" onclick="tS()">⚡ 手動觸發彙整</button></div>
+    <table><thead><tr><th>App</th><th>User</th><th>週區間</th><th>摘要</th><th>時間</th></tr></thead>
+    <tbody id="smT"></tbody></table></div>
+  </div>
+
+  <!-- 客戶端協議 -->
+  <div id="p-protocol" class="pn">
+    <div class="cd">
+      <div class="ct">📐 客戶端接入協議</div>
+      <p style="color:var(--tx2);margin-bottom:16px;font-size:14px">客戶端透過 HTTP POST 發送 JSON 封裝的請求，取得 AI 回覆。</p>
+      <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">1️⃣ 請求格式 (Client → Server)</h3>
+      <div class="cb">POST /ws/05-ai-gateway/api/query
+Content-Type: application/json
+
+{
+  "app_id": "your_app_identifier",
+  "user_id": "user_unique_id",
+  "query_data": "用戶的問題或輸入內容",
+  "options": {
+    "temperature": 0.7,
+    "max_tokens": 2000
+  }
+}</div>
+      <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">2️⃣ 成功回覆 (Server → Client)</h3>
+      <div class="cb">{
+  "success": true,
+  "session_id": "sess_app1_user1_1746123456789",
+  "response": "AI 生成的回覆內容...",
+  "local_path": "/data/app1/user1",
+  "duration_ms": 2340,
+  "context_used": true
+}</div>
+      <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">3️⃣ 錯誤回覆</h3>
+      <div class="cb">{
+  "success": false,
+  "session_id": "sess_xxx",
+  "error": "錯誤描述（Queue full / API timeout 等）"
+}</div>
+      <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">4️⃣ JavaScript / React Native 範例</h3>
+      <div class="cb">async function queryAI(appId, userId, question) {
+  const res = await fetch(
+    'https://43.135.184.31/ws/05-ai-gateway/api/query',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        app_id: appId,
+        user_id: userId,
+        query_data: question,
+      }),
+    }
+  );
+  const result = await res.json();
+  return result.success ? result.response : null;
+}
+
+// 使用
+const answer = await queryAI('my_app', 'user123', '你好');</div>
+      <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">5️⃣ Swift / iOS 範例</h3>
+      <div class="cb">func queryAI(appId: String, userId: String, question: String) async -> String? {
+  var req = URLRequest(url: URL(string: "https://43.135.184.31/ws/05-ai-gateway/api/query")!)
+  req.httpMethod = "POST"
+  req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+  req.httpBody = try? JSONSerialization.data(withJSONObject: [
+    "app_id": appId,
+    "user_id": userId,
+    "query_data": question
+  ])
+  let (data, _) = try? await URLSession.shared.data(for: req)
+  let r = try? JSONSerialization.jsonObject(with: data!) as? [String: Any]
+  return r?["success"] as? Bool == true ? r?["response"] as? String : nil
+}</div>
+      <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">6️⃣ Kotlin / Android 範例</h3>
+      <div class="cb">suspend fun queryAI(appId: String, userId: String, q: String): String? {
+  val json = JSONObject().apply {
+    put("app_id", appId); put("user_id", userId); put("query_data", q)
+  }
+  val body = json.toString().toRequestBody("application/json".toMediaType())
+  val req = Request.Builder()
+    .url("https://43.135.184.31/ws/05-ai-gateway/api/query")
+    .post(body).build()
+  return OkHttpClient().newCall(req).execute().use { resp ->
+    val r = JSONObject(resp.body!!.string())
+    if (r.getBoolean("success")) r.getString("response") else null
+  }
+}</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 新增 API Key Modal -->
+<div id="akM" class="mo" style="display:none" onclick="if(event.target===this)cM()">
+  <div class="md">
+    <h3>🔑 新增 API Key</h3>
+    <div class="fg"><label>API Key *</label><input id="nKV" placeholder="nvapi-xxx 或 sk-xxx"></div>
+    <div class="fg"><label>標籤</label><input id="nKL" placeholder="NVIDIA Key #1"></div>
+    <div class="fg">
+      <label>Base URL</label>
+      <select id="nKU" onchange="if(this.value==='custom'){this.nextElementSibling.style.display='block';this.nextElementSibling.focus()}else{this.nextElementSibling.style.display='none'}">
+        <option value="https://integrate.api.nvidia.com/v1">NVIDIA (integrate.api.nvidia.com)</option>
+        <option value="https://api.openai.com/v1">OpenAI (api.openai.com)</option>
+        <option value="https://api.anthropic.com/v1">Anthropic (api.anthropic.com)</option>
+        <option value="custom">自訂...</option>
+      </select>
+      <input id="nKUCustom" style="display:none;margin-top:6px" placeholder="https://your-api.example.com/v1">
+    </div>
+    <div class="fg">
+      <label>模型</label>
+      <select id="nKM" onchange="if(this.value==='custom'){this.nextElementSibling.style.display='block';this.nextElementSibling.focus()}else{this.nextElementSibling.style.display='none'}">
+        <option value="meta/llama-3.1-8b-instruct">meta/llama-3.1-8b-instruct (NVIDIA)</option>
+        <option value="meta/llama-3.3-70b-instruct">meta/llama-3.3-70b-instruct (NVIDIA)</option>
+        <option value="mistralai/mistral-large">mistralai/mistral-large (NVIDIA)</option>
+        <option value="gpt-4o">gpt-4o (OpenAI)</option>
+        <option value="gpt-4o-mini">gpt-4o-mini (OpenAI)</option>
+        <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet (Anthropic)</option>
+        <option value="custom">自訂...</option>
+      </select>
+      <input id="nKMCustom" style="display:none;margin-top:6px" placeholder="your-model/name">
+    </div>
+    <div class="fg"><label>速率限制 (請求/分)</label><input type="number" id="nKR" value="10" min="1" max="1000"></div>
+    <div class="modal-actions">
+      <button class="btn bg" onclick="cM()">取消</button>
+      <button class="btn bp" onclick="aK()">新增</button>
+    </div>
+  </div>
+</div>
+
+<!-- 編輯 API Key Modal -->
+<div id="ekM" class="mo" style="display:none" onclick="if(event.target===this)ceM()">
+  <div class="md">
+    <h3>✏️ 編輯 API Key <span id="ekId" style="color:var(--ac2);font-size:14px"></span></h3>
+    <div class="fg"><label>API Key 值</label><input id="eKV" readonly style="opacity:.6;cursor:not-allowed"></div>
+    <div class="fg"><label>標籤</label><input id="eKL" placeholder="給 Key 一個名稱"></div>
+    <div class="fg">
+      <label>Base URL</label>
+      <select id="eKU" onchange="if(this.value==='custom'){this.nextElementSibling.style.display='block';this.nextElementSibling.focus()}else{this.nextElementSibling.style.display='none'}">
+        <option value="https://integrate.api.nvidia.com/v1">NVIDIA (integrate.api.nvidia.com)</option>
+        <option value="https://api.openai.com/v1">OpenAI (api.openai.com)</option>
+        <option value="https://api.anthropic.com/v1">Anthropic (api.anthropic.com)</option>
+        <option value="custom">自訂...</option>
+      </select>
+      <input id="eKUCustom" style="display:none;margin-top:6px" placeholder="https://your-api.example.com/v1">
+    </div>
+    <div class="fg">
+      <label>模型</label>
+      <select id="eKM" onchange="if(this.value==='custom'){this.nextElementSibling.style.display='block';this.nextElementSibling.focus()}else{this.nextElementSibling.style.display='none'}">
+        <option value="meta/llama-3.1-8b-instruct">meta/llama-3.1-8b-instruct (NVIDIA)</option>
+        <option value="meta/llama-3.3-70b-instruct">meta/llama-3.3-70b-instruct (NVIDIA)</option>
+        <option value="mistralai/mistral-large">mistralai/mistral-large (NVIDIA)</option>
+        <option value="gpt-4o">gpt-4o (OpenAI)</option>
+        <option value="gpt-4o-mini">gpt-4o-mini (OpenAI)</option>
+        <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet (Anthropic)</option>
+        <option value="custom">自訂...</option>
+      </select>
+      <input id="eKMCustom" style="display:none;margin-top:6px" placeholder="your-model/name">
+    </div>
+    <div class="fg"><label>速率限制 (請求/分)</label><input type="number" id="eKR" min="1" max="1000"></div>
+    <div class="fg">
+      <label>狀態</label>
+      <select id="eKS">
+        <option value="1">啟用 (active)</option>
+        <option value="0">停用 (inactive)</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn bg" onclick="ceM()">取消</button>
+      <button class="btn bp" onclick="uK()">儲存變更</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const B='/ws/05-ai-gateway';
+
+// ---- 工具函數 ----
+function sw(n,el){document.querySelectorAll('.pn').forEach(p=>p.classList.remove('act'));document.querySelectorAll('.nbtn').forEach(b=>b.classList.remove('act'));document.getElementById('p-'+n).classList.add('act');el.classList.add('act');lP(n)}
+async function api(p){return(await fetch(B+p)).json()}
+async function apiP(p,b){return(await fetch(B+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json()}
+async function apiU(p,b){return(await fetch(B+p,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json()}
+async function apiD(p){return(await fetch(B+p,{method:'DELETE'})).json()}
+function mk(k){return!k||k.length<8?k:k.substring(0,6)+'...'+k.slice(-4)}
+function ta(i){if(!i)return'—';const d=Date.now()-new Date(i).getTime();return d<6e4?Math.floor(d/1e3)+'s':d<36e5?Math.floor(d/6e4)+'m':d<864e5?Math.floor(d/36e5)+'h':Math.floor(d/864e5)+'d'}
+function sb(s){const m={completed:'bok',active:'bin',queued:'bwn',failed:'ber',timeout:'ber'};return`<span class="bge ${m[s]||'bin'}">${s}</span>`}
+
+// 選擇 select 或自訂
+function resolveSelect(selId, customId) {
+  const sel = document.getElementById(selId);
+  const custom = document.getElementById(customId);
+  if (sel.value === 'custom') {
+    return custom.value.trim();
+  }
+  return sel.value;
+}
+
+// 設定 select 回顯值（匹配或切 custom）
+function setSelectValue(selId, customId, value) {
+  const sel = document.getElementById(selId);
+  const custom = document.getElementById(customId);
+  const opts = Array.from(sel.options).map(o => o.value);
+  if (opts.includes(value)) {
+    sel.value = value;
+    custom.style.display = 'none';
+  } else {
+    sel.value = 'custom';
+    custom.value = value;
+    custom.style.display = 'block';
+  }
+}
+
+// ---- 頁面載入 ----
+async function lP(n){if(n==='overview')lO();if(n==='keys')lK();if(n==='apps')lA();if(n==='sessions')lS();if(n==='summaries')lSm()}
+
+async function lO(){
+  const r=await api('/api/admin/stats'),s=r.data;
+  document.getElementById('sG').innerHTML=['apps','users','totalSessions','todaySessions'].map(k=>`<div class="sc"><div class="sv">${s[k]}</div><div class="sl">${{apps:'應用數',users:'用戶數',totalSessions:'總Sessions',todaySessions:'今日Sessions'}[k]}</div></div>`).join('')+`<div class="sc"><div class="sv">${s.keyPool.totalKeys}</div><div class="sl">API Keys</div></div><div class="sc"><div class="sv">${s.keyPool.available}</div><div class="sl">可用Keys</div></div>`;
+  document.getElementById('hK').textContent=`Keys: ${s.keyPool.available}/${s.keyPool.totalKeys}`;
+  document.getElementById('hQ').textContent=`佇列: ${s.keyPool.queueLength}`;
+  const se=await api('/api/admin/sessions?limit=10');
+  document.getElementById('rS').innerHTML=se.data.map(s=>`<tr><td style="font-size:11px;font-family:monospace">${s.session_id.substring(0,30)}…</td><td>${s.app_id}</td><td>${s.user_id}</td><td>${sb(s.status)}</td><td>${s.duration_ms?(s.duration_ms/1e3).toFixed(1)+'s':'—'}</td><td>${ta(s.created_at)}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">尚無</td></tr>'
+}
+
+// 緩存 keys 供編輯用
+let _keysCache = [];
+
+async function lK(){
+  const r=await api('/api/admin/keys');
+  _keysCache = r.data;
+  document.getElementById('kT').innerHTML=r.data.map(k=>`<tr>
+    <td>${k.id}</td>
+    <td>${k.label||'—'}</td>
+    <td class="km">${mk(k.key_value)}</td>
+    <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${k.base_url}</td>
+    <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${k.model}</td>
+    <td>${k.rate_limit}/m</td>
+    <td>${k.total_calls}</td>
+    <td>${k.is_active?'<span class="bge bok">active</span>':'<span class="bge ber">inactive</span>'}</td>
+    <td>
+      <button class="btn bsm be" onclick="seM(${k.id})">✏️ 編輯</button>
+      <button class="btn bsm bg" onclick="tK(${k.id},${k.is_active})">${k.is_active?'停用':'啟用'}</button>
+      <button class="btn bsm bd" onclick="dK(${k.id})">刪除</button>
+    </td></tr>`).join('')||'<tr><td colspan="9" class="empty">尚無 API Keys — 請先新增</td></tr>'
+}
+
+async function lA(){
+  const[ap,us]=await Promise.all([api('/api/admin/apps'),api('/api/admin/users')]);
+  document.getElementById('aT').innerHTML=ap.data.map(a=>`<tr><td><strong>${a.app_id}</strong></td><td>${a.name}</td><td>${a.user_count}</td><td>${ta(a.created_at)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">尚無</td></tr>';
+  document.getElementById('uT').innerHTML=us.data.map(u=>`<tr><td>${u.app_id}</td><td><strong>${u.user_id}</strong></td><td style="font-size:11px;font-family:monospace">${u.local_path||'—'}</td><td>${ta(u.last_active)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">尚無</td></tr>'
+}
+
+async function lS(){
+  const st=document.getElementById('sf').value,r=await api('/api/admin/sessions?limit=50'+(st?'&status='+st:''));
+  document.getElementById('sT').innerHTML=r.data.map(s=>`<tr><td style="font-size:11px;font-family:monospace">${s.session_id.substring(0,35)}…</td><td>${s.app_id}</td><td>${s.user_id}</td><td>${sb(s.status)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.query_preview||'—'}</td><td>${s.duration_ms?(s.duration_ms/1e3).toFixed(1)+'s':'—'}</td><td>${ta(s.created_at)}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">尚無</td></tr>'
+}
+
+async function lSm(){
+  const r=await api('/api/admin/summaries');
+  document.getElementById('smT').innerHTML=r.data.map(s=>`<tr><td>${s.app_id}</td><td>${s.user_id}</td><td>${s.week_start}~${s.week_end}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(s.summary_text||'').substring(0,100)}…</td><td>${ta(s.created_at)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">尚無</td></tr>'
+}
+
+// ---- 新增 Key ----
+function sM(){document.getElementById('akM').style.display='flex';document.getElementById('nKV').value='';document.getElementById('nKL').value='';document.getElementById('nKU').value='https://integrate.api.nvidia.com/v1';document.getElementById('nKUCustom').style.display='none';document.getElementById('nKM').value='meta/llama-3.1-8b-instruct';document.getElementById('nKMCustom').style.display='none';document.getElementById('nKR').value='10'}
+function cM(){document.getElementById('akM').style.display='none'}
+async function aK(){
+  const baseUrl = resolveSelect('nKU','nKUCustom');
+  const model = resolveSelect('nKM','nKMCustom');
+  await apiP('/api/admin/keys',{
+    key_value:document.getElementById('nKV').value,
+    label:document.getElementById('nKL').value,
+    base_url:baseUrl,
+    model:model,
+    rate_limit:parseInt(document.getElementById('nKR').value)
+  });
+  cM();lK()
+}
+
+// ---- 編輯 Key ----
+function seM(id){
+  const k = _keysCache.find(x => x.id === id);
+  if(!k) return;
+  document.getElementById('ekId').textContent = `#${k.id}`;
+  document.getElementById('eKV').value = k.key_value;
+  document.getElementById('eKL').value = k.label || '';
+  setSelectValue('eKU','eKUCustom', k.base_url);
+  setSelectValue('eKM','eKMCustom', k.model);
+  document.getElementById('eKR').value = k.rate_limit;
+  document.getElementById('eKS').value = k.is_active ? '1' : '0';
+  // 保存正在編輯的 key id
+  document.getElementById('ekM').dataset.keyId = id;
+  document.getElementById('ekM').style.display='flex';
+}
+function ceM(){document.getElementById('ekM').style.display='none'}
+async function uK(){
+  const id = document.getElementById('ekM').dataset.keyId;
+  const baseUrl = resolveSelect('eKU','eKUCustom');
+  const model = resolveSelect('eKM','eKMCustom');
+  await apiU('/api/admin/keys/'+id,{
+    label:document.getElementById('eKL').value,
+    base_url:baseUrl,
+    model:model,
+    is_active:parseInt(document.getElementById('eKS').value),
+    rate_limit:parseInt(document.getElementById('eKR').value)
+  });
+  ceM();lK()
+}
+
+// ---- 停用/啟用/刪除 ----
+async function tK(id,a){await apiU('/api/admin/keys/'+id,{is_active:a?0:1});lK()}
+async function dK(id){if(confirm('確定刪除?')){await apiD('/api/admin/keys/'+id);lK()}}
+
+// ---- 彙整 ----
+async function tS(){await apiP('/api/admin/trigger-summary',{});alert('彙整已開始');lSm()}
+
+lO();
+</script>
+</body>
+</html>
