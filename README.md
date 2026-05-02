@@ -44,7 +44,7 @@ npm start
 ## 客戶端接入
 
 ```javascript
-const res = await fetch('https://your-host/ws/05-ai-gateway/api/query', {
+const res = await fetch('http://www.herelai.fun/ws/05-ai-gateway/api/query', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({

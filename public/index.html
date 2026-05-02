@@ -154,7 +154,7 @@ Content-Type: application/json
       <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">4️⃣ JavaScript / React Native 範例</h3>
       <div class="cb">async function queryAI(appId, userId, question) {
   const res = await fetch(
-    'https://43.135.184.31/ws/05-ai-gateway/api/query',
+    'http://herelai.fun/ws/05-ai-gateway/api/query',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -173,7 +173,7 @@ Content-Type: application/json
 const answer = await queryAI('my_app', 'user123', '你好');</div>
       <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">5️⃣ Swift / iOS 範例</h3>
       <div class="cb">func queryAI(appId: String, userId: String, question: String) async -> String? {
-  var req = URLRequest(url: URL(string: "https://43.135.184.31/ws/05-ai-gateway/api/query")!)
+  var req = URLRequest(url: URL(string: "http://herelai.fun/ws/05-ai-gateway/api/query")!)
   req.httpMethod = "POST"
   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
   req.httpBody = try? JSONSerialization.data(withJSONObject: [
@@ -192,7 +192,7 @@ const answer = await queryAI('my_app', 'user123', '你好');</div>
   }
   val body = json.toString().toRequestBody("application/json".toMediaType())
   val req = Request.Builder()
-    .url("https://43.135.184.31/ws/05-ai-gateway/api/query")
+    .url("http://herelai.fun/ws/05-ai-gateway/api/query")
     .post(body).build()
   return OkHttpClient().newCall(req).execute().use { resp ->
     val r = JSONObject(resp.body!!.string())

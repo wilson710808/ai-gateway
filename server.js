@@ -790,9 +790,9 @@ process.on('SIGINT', () => {
 // ============================================
 // 啟動
 // ============================================
-app.listen(CONFIG.port, '0.0.0.0', () => {
-  console.log(`🤖 AI Gateway Server 已啟動: http://0.0.0.0:${CONFIG.port}`);
-  console.log(`📊 管理介面: http://0.0.0.0:${CONFIG.port}/admin`);
+app.listen(CONFIG.port, '127.0.0.1', () => {
+  console.log(`🤖 AI Gateway Server 已啟動: http://127.0.0.1:${CONFIG.port}`);
+  console.log(`📊 管理介面: http://127.0.0.1:${CONFIG.port}/admin`);
   console.log(`🔑 API Key 池: ${keyPool.getStatus().totalKeys} 個`);
   console.log(`📁 數據目錄: ${CONFIG.dataDir}`);
   console.log(`⏰ 彙整時間: ${CONFIG.summaryTime}`);
