@@ -534,10 +534,10 @@ app.get('/', (req, res) => {
 app.post('/api/query', async (req, res) => {
   const { app_id, user_id, query_data, options, messages: reqMessages } = req.body;
 
-  if (!app_id || !user_id || !query_data) {
+  if (!app_id || !user_id || (!query_data && (!reqMessages || reqMessages.length === 0))) {
     return res.status(400).json({
       success: false,
-      error: '缺少必要欄位: app_id, user_id, query_data'
+      error: '缺少必要欄位: app_id, user_id, query_data 或 messages'
     });
   }
 
