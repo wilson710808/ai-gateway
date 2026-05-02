@@ -329,7 +329,7 @@ const rawDataLogger = new RawDataLogger();
 // ============================================
 // AI 服務調用
 // ============================================
-async function callAI(apiKey, queryData, contextHistory = '') {
+async function callAI(apiKey, queryData, contextHistory = '', explicitMessages = null) {
   const baseUrl = apiKey.base_url || CONFIG.defaultAIBaseUrl;
   const model = apiKey.model || CONFIG.defaultAIModel;
 
@@ -343,10 +343,12 @@ async function callAI(apiKey, queryData, contextHistory = '') {
     });
   }
 
-  messages.push({
-    role: 'user',
-    content: queryData
-  });
+  // 如果客戶端直接傳入 messages 陣列（多輪對話），優先使用
+  if (explicitMessages && Array.isArray(explicitMessages) && explicitMessages.length > 0) {
+    messages.push(...explicitMessages);
+  } else {
+    messages.push({ role: 'user', content: queryData });
+  }
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
@@ -530,7 +532,7 @@ app.get('/', (req, res) => {
  * Response: { success, session_id, response, local_path }
  */
 app.post('/api/query', async (req, res) => {
-  const { app_id, user_id, query_data, options } = req.body;
+  const { app_id, user_id, query_data, options, messages: reqMessages } = req.body;
 
   if (!app_id || !user_id || !query_data) {
     return res.status(400).json({
@@ -566,7 +568,7 @@ app.post('/api/query', async (req, res) => {
     const contextHistory = getUserContextHistory(app_id, user_id);
 
     // 調用 AI
-    const aiResponse = await callAI(apiKey, query_data, contextHistory);
+    const aiResponse = await callAI(apiKey, query_data, contextHistory, reqMessages);
 
     // 釋放 API Key
     keyPool.release(apiKey.id);
