@@ -43,7 +43,11 @@ npm start
 
 ## 客戶端接入
 
-```javascript
+> 🔒 所有通信使用 HTTPS 協議（TLS 1.2+，Let's Encrypt 證書）。域名：`https://www.herelai.fun`
+
+### 基本請求
+
+\`\`\`javascript
 const res = await fetch('https://www.herelai.fun/ws/05-ai-gateway/api/query', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -54,7 +58,31 @@ const res = await fetch('https://www.herelai.fun/ws/05-ai-gateway/api/query', {
   })
 });
 const { response } = await res.json();
-```
+\`\`\`
+
+### 多輪對話（messages 陣列）
+
+\`\`\`javascript
+const res = await fetch('https://www.herelai.fun/ws/05-ai-gateway/api/query', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    app_id: 'your_app',
+    user_id: 'user_id',
+    query_data: '我叫什麼？',
+    messages: [
+      { role: 'user', content: '我叫小華' },
+      { role: 'assistant', content: '你好小華！' },
+      { role: 'user', content: '我叫什麼？' }
+    ],
+    options: { temperature: 0.7, max_tokens: 2000 }
+  })
+});
+const data = await res.json();
+// data.response → "你叫小華"
+\`\`\`
+
+> 💡 messages 使用原生 OpenAI 格式。若同時提供 query_data 和 messages，優先使用 messages。
 
 ## 授權
 

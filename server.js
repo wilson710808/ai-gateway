@@ -1,5 +1,5 @@
 /**
- * AI Gateway Server — 多應用 AI API 閘道器
+ * AI Gateway Server (HTTPS) — 多應用 AI API 閘道器
  * 
  * 核心功能：
  * 1. 三層索引數據庫 (app_id → user_id → local_path)
@@ -791,7 +791,7 @@ process.on('SIGINT', () => {
 // 啟動
 // ============================================
 app.listen(CONFIG.port, '127.0.0.1', () => {
-  console.log(`🤖 AI Gateway Server 已啟動: http://127.0.0.1:${CONFIG.port}`);
+  console.log(`🤖 AI Gateway Server (HTTPS) 已啟動: http://127.0.0.1:${CONFIG.port}`);
   console.log(`📊 管理介面: http://127.0.0.1:${CONFIG.port}/admin`);
   console.log(`🔑 API Key 池: ${keyPool.getStatus().totalKeys} 個`);
   console.log(`📁 數據目錄: ${CONFIG.dataDir}`);

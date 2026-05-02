@@ -122,20 +122,27 @@
   <div id="p-protocol" class="pn">
     <div class="cd">
       <div class="ct">📐 客戶端接入協議</div>
-      <p style="color:var(--tx2);margin-bottom:16px;font-size:14px">客戶端透過 HTTP POST 發送 JSON 封裝的請求，取得 AI 回覆。</p>
+      <p style="color:var(--tx2);margin-bottom:16px;font-size:14px">客戶端透過 HTTPS POST 發送 JSON 封裝的請求，取得 AI 回覆。所有通信均使用 TLS 加密（Let's Encrypt 證書）。</p>
       <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">1️⃣ 請求格式 (Client → Server)</h3>
-      <div class="cb">POST /ws/05-ai-gateway/api/query
+      <div class="cb">POST https://www.herelai.fun/ws/05-ai-gateway/api/query
 Content-Type: application/json
+Protocol: HTTPS (TLS 1.2+, Let's Encrypt 證書)
 
 {
   "app_id": "your_app_identifier",
   "user_id": "user_unique_id",
   "query_data": "用戶的問題或輸入內容",
+  "messages": [
+    {"role": "user", "content": "之前的對話"},
+    {"role": "assistant", "content": "AI 之前的回覆"},
+    {"role": "user", "content": "用戶的問題或輸入內容"}
+  ],
   "options": {
     "temperature": 0.7,
     "max_tokens": 2000
   }
 }</div>
+      <p style="color:var(--tx2);margin:8px 0 16px;font-size:12px">💡 messages 陣列支持多輪對話上下文（原生 OpenAI 格式），AI 能準確理解歷史對話。若同時提供 query_data 和 messages，優先使用 messages。</p>
       <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">2️⃣ 成功回覆 (Server → Client)</h3>
       <div class="cb">{
   "success": true,
@@ -143,7 +150,8 @@ Content-Type: application/json
   "response": "AI 生成的回覆內容...",
   "local_path": "/data/app1/user1",
   "duration_ms": 2340,
-  "context_used": true
+  "context_used": true,
+  "model": "meta/llama-3.1-8b-instruct"
 }</div>
       <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">3️⃣ 錯誤回覆</h3>
       <div class="cb">{
@@ -154,7 +162,7 @@ Content-Type: application/json
       <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">4️⃣ JavaScript / React Native 範例</h3>
       <div class="cb">async function queryAI(appId, userId, question) {
   const res = await fetch(
-    'http://herelai.fun/ws/05-ai-gateway/api/query',
+    'https://www.herelai.fun/ws/05-ai-gateway/api/query',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -173,7 +181,7 @@ Content-Type: application/json
 const answer = await queryAI('my_app', 'user123', '你好');</div>
       <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">5️⃣ Swift / iOS 範例</h3>
       <div class="cb">func queryAI(appId: String, userId: String, question: String) async -> String? {
-  var req = URLRequest(url: URL(string: "http://herelai.fun/ws/05-ai-gateway/api/query")!)
+  var req = URLRequest(url: URL(string: "https://www.herelai.fun/ws/05-ai-gateway/api/query")!)
   req.httpMethod = "POST"
   req.setValue("application/json", forHTTPHeaderField: "Content-Type")
   req.httpBody = try? JSONSerialization.data(withJSONObject: [
@@ -192,7 +200,7 @@ const answer = await queryAI('my_app', 'user123', '你好');</div>
   }
   val body = json.toString().toRequestBody("application/json".toMediaType())
   val req = Request.Builder()
-    .url("http://herelai.fun/ws/05-ai-gateway/api/query")
+    .url("https://www.herelai.fun/ws/05-ai-gateway/api/query")
     .post(body).build()
   return OkHttpClient().newCall(req).execute().use { resp ->
     val r = JSONObject(resp.body!!.string())
