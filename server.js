@@ -19,6 +19,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 // ============================================
@@ -36,6 +37,10 @@ const CONFIG = {
   sessionTimeout: parseInt(process.env.SESSION_TIMEOUT || '300000'), // 5 分鐘
   maxConcurrentPerKey: parseInt(process.env.MAX_CONCURRENT_PER_KEY || '5'), // 每 key 最大併發數
   keyStaleTimeout: parseInt(process.env.KEY_STALE_TIMEOUT || '120000'), // 2 分鐘：僵死 session 自動釋放
+  // 安全配置
+  adminToken: process.env.ADMIN_TOKEN || crypto.randomBytes(32).toString('hex'),
+  corsOrigins: process.env.CORS_ORIGINS || '', // 留空則同源限制，'*' 則全開
+  sessionArchiveDays: parseInt(process.env.SESSION_ARCHIVE_DAYS || '7'), // session 保留天數
 };
 
 // 確保數據目錄存在
@@ -165,7 +170,7 @@ class APIKeyPool {
         this.activeSessions.set(key.id, new Set());
       }
       if (!this.rateWindows.has(key.id)) {
-        this.rateWindows.set(key.id, []);
+        this.rateWindows.set(key.id, new RateWindow(this._getRateLimit(key)));
       }
       // 同步 DB total_calls 到 runtime 計數器（重啟後保留歷史）
       if (!this._runtimeCalls.has(key.id)) {
@@ -210,21 +215,15 @@ class APIKeyPool {
   _checkRateLimit(keyId) {
     const window = this.rateWindows.get(keyId);
     if (!window) return true;
-    const now = Date.now();
+    window.prune();
     const key = this.keys.find(k => k.id === keyId);
-    const limit = this._getRateLimit(key);
-    // 過濾掉超過 60s 的記錄
-    const recent = window.filter(ts => now - ts < 60000);
-    this.rateWindows.set(keyId, recent);
-    return recent.length < limit;
+    return window.recentCount() < this._getRateLimit(key);
   }
 
   /** 記錄一次速率窗口請求 */
   _recordRateHit(keyId) {
     const window = this.rateWindows.get(keyId);
-    if (window) {
-      window.push(Date.now());
-    }
+    if (window) window.push(Date.now());
   }
 
   /**
@@ -415,7 +414,7 @@ class APIKeyPool {
       const concurrentCount = active ? active.size : 0;
       const maxConcurrent = this._getMaxConcurrent(k);
       const rateWindow = this.rateWindows.get(k.id) || [];
-      const recentHits = rateWindow.filter(ts => Date.now() - ts < 60000).length;
+      const recentHits = rateWindow ? rateWindow.recentCount() : 0;
       const runtimeCalls = this._runtimeCalls.get(k.id) || 0;
       return {
         id: k.id,
@@ -443,6 +442,63 @@ class APIKeyPool {
   /** 銷毀時清理定時器 */
   destroy() {
     clearInterval(this._staleCheckInterval);
+  }
+}
+
+// 啟動時清理過期 sessions
+if (CONFIG.sessionArchiveDays > 0) {
+  const deleted = db.prepare(
+    "DELETE FROM sessions WHERE created_at < datetime('now', '-' || ? || ' days')"
+  ).run(CONFIG.sessionArchiveDays);
+  if (deleted.changes > 0) {
+    console.log(`[DB] 清理了 ${deleted.changes} 筆超過 ${CONFIG.sessionArchiveDays} 天的 session 記錄`);
+  }
+}
+
+// ============================================
+// 工具函數
+// ============================================
+
+/**
+ * 校驗 app_id / user_id 格式
+ * 只允許：字母、數字、連字符、底線、點
+ * 防止路徑遍歷（../）、SQL 注入殘留、特殊字符
+ */
+function validateId(name, value) {
+  if (!value || typeof value !== 'string') return `${name} 必須為非空字串`;
+  if (value.length > 128) return `${name} 長度不得超過 128 字元`;
+  if (!/^[a-zA-Z0-9._-]+$/.test(value)) return `${name} 只允許字母、數字、連字符、底線、點`;
+  if (value.includes('..')) return `${name} 不得包含路徑遍歷字符`;
+  return null;
+}
+
+// ============================================
+// RateWindow — O(log n) 滑動窗口（二分清理）
+// 取代 Array filter，避免高頻時 O(n) GC 壓力
+// ============================================
+class RateWindow {
+  constructor(limit) {
+    this.limit = limit;
+    this.timestamps = [];
+    this._maxSize = limit * 3;
+  }
+  push(ts) {
+    this.timestamps.push(ts);
+    if (this.timestamps.length > this._maxSize) this.prune();
+  }
+  prune() {
+    const cutoff = Date.now() - 60000;
+    let lo = 0, hi = this.timestamps.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.timestamps[mid] < cutoff) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo > 0) this.timestamps = this.timestamps.slice(lo);
+  }
+  recentCount() {
+    this.prune();
+    return this.timestamps.length;
   }
 }
 
@@ -496,7 +552,7 @@ class RawDataLogger {
   }
 
   log(appId, userId, queryData) {
-    const key = `${appId}_${userId}`;
+    const key = `${appId}\x00${userId}`;
     const today = new Date().toISOString().split('T')[0];
 
     if (!this.buffers.has(key)) {
@@ -519,7 +575,7 @@ class RawDataLogger {
   }
 
   _flushToFile(key, buf) {
-    const [appId, userId] = key.split('_');
+    const [appId, userId] = key.split('\x00');
     const userPath = getOrCreateUserPath(appId, userId);
     const rawDir = path.join(userPath, 'raw');
     if (!fs.existsSync(rawDir)) fs.mkdirSync(rawDir, { recursive: true });
@@ -575,6 +631,11 @@ async function callAI(apiKey, queryData, contextHistory = '', explicitMessages =
     messages.push({ role: 'user', content: queryData });
   }
 
+  // 30s 超時控制，防止 AI API 無回應佔住併發槽位
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+  try {
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -587,6 +648,7 @@ async function callAI(apiKey, queryData, contextHistory = '', explicitMessages =
       temperature: 0.7,
       max_tokens: 2000,
     }),
+    signal: controller.signal,
   });
 
   if (!response.ok) {
@@ -595,7 +657,13 @@ async function callAI(apiKey, queryData, contextHistory = '', explicitMessages =
   }
 
   const data = await response.json();
+  if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+    throw new Error('AI API 返回格式異常：缺少 choices[0].message');
+  }
   return data.choices[0].message.content;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // ============================================
@@ -738,8 +806,69 @@ function getUserContextHistory(appId, userId) {
 // Express 應用
 // ============================================
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+
+// CORS 配置：白名單制
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (CONFIG.corsOrigins === '*') return callback(null, true);
+    if (!CONFIG.corsOrigins) return callback(null, false);
+    const allowed = CONFIG.corsOrigins.split(',').map(s => s.trim());
+    if (allowed.includes(origin)) return callback(null, true);
+    callback(new Error('CORS not allowed'));
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+app.use(require('cors')(corsOptions));
+
+app.use(express.json({ limit: '1mb' }));
+
+// 安全標頭
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.removeHeader('X-Powered-By');
+  next();
+});
+
+// 簡易 IP 速率限制（每分鐘 60 次）
+const ipRateLimits = new Map();
+app.use((req, res, next) => {
+  if (req.path.startsWith('/admin') || req.path === '/api/health') return next();
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  let entry = ipRateLimits.get(ip);
+  if (!entry || now - entry.resetAt > 60000) {
+    entry = { count: 0, resetAt: now };
+    ipRateLimits.set(ip, entry);
+  }
+  entry.count++;
+  if (entry.count > 60) {
+    return res.status(429).json({ success: false, error: 'Rate limit exceeded (60/min)' });
+  }
+  next();
+});
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of ipRateLimits) {
+    if (now - entry.resetAt > 120000) ipRateLimits.delete(ip);
+  }
+}, 5 * 60 * 1000);
+
+// Admin 認證中間件
+function adminAuth(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: '需要 Admin Token (Bearer Authorization header)' });
+  }
+  const token = authHeader.substring(7);
+  if (token !== CONFIG.adminToken) {
+    return res.status(403).json({ error: 'Admin Token 無效' });
+  }
+  next();
+}
 
 // 根路徑重定向到管理介面
 app.get('/', (req, res) => {
@@ -757,10 +886,30 @@ app.get('/', (req, res) => {
 app.post('/api/query', async (req, res) => {
   const { app_id, user_id, query_data, options, messages: reqMessages } = req.body;
 
-  if (!app_id || !user_id || (!query_data && (!reqMessages || reqMessages.length === 0))) {
+  if (!app_id || !user_id) {
     return res.status(400).json({
       success: false,
-      error: '缺少必要欄位: app_id, user_id, query_data 或 messages'
+      error: '缺少必要欄位: app_id, user_id'
+    });
+  }
+
+  const appErr = validateId('app_id', app_id);
+  if (appErr) return res.status(400).json({ success: false, error: appErr });
+
+  const userErr = validateId('user_id', user_id);
+  if (userErr) return res.status(400).json({ success: false, error: userErr });
+
+  if (!query_data && (!reqMessages || reqMessages.length === 0)) {
+    return res.status(400).json({
+      success: false,
+      error: '缺少 query_data 或 messages'
+    });
+  }
+
+  if (query_data && query_data.length > 10000) {
+    return res.status(400).json({
+      success: false,
+      error: 'query_data 長度不得超過 10000 字元'
     });
   }
 
@@ -842,14 +991,14 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     keyPool: poolStatus,
-    version: '2.0.0',
+    version: '2.2.0',
   });
 });
 
 // ---- 管理 API ----
 
 // API Keys 管理
-app.get('/api/admin/keys', (req, res) => {
+app.get('/api/admin/keys', adminAuth, (req, res) => {
   const keys = db.prepare('SELECT id, label, base_url, model, is_active, total_calls, last_used, rate_limit, max_concurrent FROM api_keys ORDER BY id').all();
   // 附加當前併發狀態
   const poolStatus = keyPool.getStatus();
@@ -863,7 +1012,7 @@ app.get('/api/admin/keys', (req, res) => {
   res.json({ success: true, data: keys });
 });
 
-app.post('/api/admin/keys', (req, res) => {
+app.post('/api/admin/keys', adminAuth, (req, res) => {
   const { key_value, label, base_url, model, rate_limit, max_concurrent } = req.body;
   if (!key_value) return res.status(400).json({ error: '缺少 key_value' });
 
@@ -888,7 +1037,7 @@ app.post('/api/admin/keys', (req, res) => {
   }
 });
 
-app.put('/api/admin/keys/:id', (req, res) => {
+app.put('/api/admin/keys/:id', adminAuth, (req, res) => {
   const { label, base_url, model, is_active, rate_limit, max_concurrent } = req.body;
   db.prepare(`
     UPDATE api_keys SET
@@ -904,14 +1053,14 @@ app.put('/api/admin/keys/:id', (req, res) => {
   res.json({ success: true });
 });
 
-app.delete('/api/admin/keys/:id', (req, res) => {
+app.delete('/api/admin/keys/:id', adminAuth, (req, res) => {
   db.prepare('DELETE FROM api_keys WHERE id = ?').run(req.params.id);
   keyPool.reload();
   res.json({ success: true });
 });
 
 // Apps 管理
-app.get('/api/admin/apps', (req, res) => {
+app.get('/api/admin/apps', adminAuth, (req, res) => {
   const apps = db.prepare('SELECT * FROM apps ORDER BY created_at DESC').all();
   for (const a of apps) {
     a.user_count = db.prepare('SELECT COUNT(*) as c FROM users WHERE app_id = ?').get(a.app_id).c;
@@ -920,7 +1069,7 @@ app.get('/api/admin/apps', (req, res) => {
 });
 
 // Users 管理
-app.get('/api/admin/users', (req, res) => {
+app.get('/api/admin/users', adminAuth, (req, res) => {
   const { app_id } = req.query;
   let users;
   if (app_id) {
@@ -932,7 +1081,7 @@ app.get('/api/admin/users', (req, res) => {
 });
 
 // Sessions 管理
-app.get('/api/admin/sessions', (req, res) => {
+app.get('/api/admin/sessions', adminAuth, (req, res) => {
   const { app_id, user_id, status, limit } = req.query;
   let sql = 'SELECT * FROM sessions WHERE 1=1';
   const params = [];
@@ -949,7 +1098,7 @@ app.get('/api/admin/sessions', (req, res) => {
 });
 
 // Summaries 管理
-app.get('/api/admin/summaries', (req, res) => {
+app.get('/api/admin/summaries', adminAuth, (req, res) => {
   const { app_id, user_id } = req.query;
   let sql = 'SELECT * FROM summaries WHERE 1=1';
   const params = [];
@@ -963,13 +1112,13 @@ app.get('/api/admin/summaries', (req, res) => {
 });
 
 // 手動觸發彙整
-app.post('/api/admin/trigger-summary', async (req, res) => {
+app.post('/api/admin/trigger-summary', adminAuth, async (req, res) => {
   res.json({ success: true, message: '彙整已開始' });
   runDailySummary().catch(err => console.error('[Summary] Error:', err));
 });
 
 // 統計
-app.get('/api/admin/stats', (req, res) => {
+app.get('/api/admin/stats', adminAuth, (req, res) => {
   const totalApps = db.prepare('SELECT COUNT(*) as c FROM apps').get().c;
   const totalUsers = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
   const totalSessions = db.prepare('SELECT COUNT(*) as c FROM sessions').get().c;
@@ -1027,6 +1176,14 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 // 優雅關閉
+process.on('SIGTERM', () => {
+  console.log('\n[Server] 收到 SIGTERM，正在關閉...');
+  keyPool.destroy();
+  rawDataLogger.flushAll();
+  db.close();
+  process.exit(0);
+});
+
 process.on('SIGINT', () => {
   console.log('\n[Server] 正在關閉...');
   keyPool.destroy();
@@ -1040,11 +1197,14 @@ process.on('SIGINT', () => {
 // ============================================
 app.listen(CONFIG.port, '127.0.0.1', () => {
   const poolStatus = keyPool.getStatus();
-  console.log(`🤖 AI Gateway Server v2.0 已啟動: http://127.0.0.1:${CONFIG.port}`);
+  console.log(`🤖 AI Gateway Server v2.2 已啟動: http://127.0.0.1:${CONFIG.port}`);
   console.log(`📊 管理介面: http://127.0.0.1:${CONFIG.port}/admin`);
   console.log(`🔑 API Key 池: ${poolStatus.totalKeys} 個 (總併發容量: ${poolStatus.maxTotalConcurrent})`);
   console.log(`📁 數據目錄: ${CONFIG.dataDir}`);
   console.log(`⏰ 彙整時間: ${CONFIG.summaryTime}`);
+  console.log(`🔐 Admin Token: ${CONFIG.adminToken.substring(0, 8)}...`);
+  console.log(`🛡️ CORS Origins: ${CONFIG.corsOrigins || '(同源限制)'}`);
+  console.log(`📦 Session 保留: ${CONFIG.sessionArchiveDays} 天`);
   console.log(`⚡ 每 key 最大併發: ${CONFIG.maxConcurrentPerKey} | 僵死超時: ${CONFIG.keyStaleTimeout / 1000}s`);
   scheduleDailySummary();
 });
