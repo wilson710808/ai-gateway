@@ -1,7 +1,7 @@
 {
   "name": "ai-gateway",
   "version": "2.0.0",
-  "description": "多應用 AI API 閘道器 - 支持 API Key 池化、三層索引數據庫、每日彙整",
+  "description": "\u591a\u61c9\u7528 AI API \u9598\u9053\u5668 - \u652f\u6301 API Key \u6c60\u5316\u3001\u4e09\u5c64\u7d22\u5f15\u6578\u64da\u5eab\u3001\u6bcf\u65e5\u5f59\u6574",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -18,7 +18,7 @@
   "author": "Wilson",
   "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^9.4.3",
+    "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.18.3",
