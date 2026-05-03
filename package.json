@@ -1,17 +1,29 @@
 {
-  "name": "ai-gateway-server",
-  "version": "1.0.0",
-  "description": "AI Response Gateway Server — 多應用 AI API 閘道器",
+  "name": "ai-gateway",
+  "version": "2.0.0",
+  "description": "多應用 AI API 閘道器 - 支持 API Key 池化、三層索引數據庫、每日彙整",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node server.js",
+    "test": "node examples.js"
   },
+  "keywords": [
+    "ai-gateway",
+    "api-gateway",
+    "nvidia",
+    "llama",
+    "proxy"
+  ],
+  "author": "Wilson",
+  "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^9.4.3",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.0",
-    "express": "^4.21.0",
-    "multer": "^1.4.5-lts.1"
+    "dotenv": "^16.4.5",
+    "express": "^4.18.3",
+    "node-cron": "^3.0.3",
+    "uuid": "^9.0.1",
+    "ws": "^8.16.0"
   }
 }
