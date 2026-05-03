@@ -4,15 +4,49 @@
 
 ## 核心功能
 
-1. **三層索引數據庫** — `app_id → user_id → local_path`
-2. **API Key 池化 v2** — 併發安全 + 滑動窗口速率限制 + 負載均衡
-3. **每日 Raw Data 記錄 + 23:55 AI 彙整**
-4. **管理 Web UI**
-5. **TCP/WebSocket/HTTP 三種客戶端接入**
+| 功能 | 說明 |
+|------|------|
+| 🌐 **三層索引數據庫** | app_id → user_id → local_path，自動創建用戶數據目錄 |
+| 🔑 **API Key 池化 v2** | 併發安全 + 滑動窗口速率限制 + 負載均衡 |
+| 📝 **每日 Raw Data** | 23:55 自動彙整，按週存放 |
+| 🔌 **三種客戶端接入** | TCP Socket / WebSocket / HTTP API |
+| 🤖 **NVIDIA AI API** | 支持 Llama、Mixtral、Nemotron 等模型 |
+| 🌐 **管理 Web UI** | 妙搭風格管理介面 |
+| 🐳 **Docker 部署** | docker-compose 一鍵部署 |
+
+---
+
+## 系統架構
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      客戶端應用                              │
+│  (移動 App / 網頁 / IoT 設備)                               │
+└─────────────────┬─────────────────────────────────────────┘
+                  │ HTTP / TCP / WebSocket
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   AI Gateway Server                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐   │
+│  │ 三層索引數據庫 │  │ API Key 池   │  │ 排程系統        │   │
+│  │ app_id      │  │ - 併發控制    │  │ 每天 23:55 彙整  │   │
+│  │ user_id     │  │ - 速率限制    │  │                  │   │
+│  │ local_path  │  │ - 排隊機制    │  │                  │   │
+│  └─────────────┘  └─────────────┘  └─────────────────┘   │
+└─────────────────┬─────────────────────────────────────────┘
+                  │ NVIDIA AI API
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   NVIDIA NIM API                           │
+│  Llama 3.1 / Mixtral / Mistral / Nemotron                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## v2 API Key Pool 機制
 
-### 架構設計
+### 與舊版對比
 
 | 機制 | v1 (舊) | v2 (新) |
 |------|---------|---------|
@@ -31,16 +65,85 @@
 - 超過併發/速率限制的 session 自動進入 FIFO 佇列等待
 - 佇列滿時（預設 100）直接拒絕新請求
 
-### 支持的 AI 模型
+---
 
-| 模型 | 說明 | 廠商 |
-|------|------|------|
-| `meta/llama-3.1-70b-instruct` | 大型開源模型 | NVIDIA |
-| `meta/llama-3.1-8b-instruct` | 輕量開源模型 | NVIDIA |
-| `meta/llama-3.3-70b-instruct` | 最新大型模型 | NVIDIA |
-| `mistralai/mistral-7b-instruct-v0.3` | Mistral 7B | NVIDIA |
-| `mistralai/mixtral-8x7b-instruct-v0.1` | Mixtral 8x7B | NVIDIA |
-| `nvidia/nemotron-70b-instruct` | NVIDIA 自家模型 | NVIDIA |
+## 三層索引數據庫
+
+### 索引結構
+
+```
+第一層: app_id (應用標識)
+   │
+   └── 第二層: user_id (用戶標識)
+           │
+           └── 第三層: local_path (本地存儲路徑)
+```
+
+### 工作流程
+
+1. **首次請求** → 根據 app_id/user_id 創建新數據目錄
+2. **路徑記錄** → 將 local_path 更新到數據庫
+3. **後續請求** → 自動讀取用戶歷史彙整作為上下文
+4. **數據隔離** → 每個 app_id/user_id 組合獨立存儲
+
+### 目錄結構
+
+```
+data/
+├── app_demo/
+│   ├── user_001/
+│   │   ├── raw/           # 原始對話記錄
+│   │   │   ├── 2026-05-01.txt
+│   │   │   ├── 2026-05-02.txt
+│   │   │   └── 2026-05-03.txt
+│   │   └── summaries/     # AI 彙整記錄
+│   │       ├── 2026-W18.txt   # 第 18 週彙整
+│   │       └── 2026-W19.txt
+│   └── user_002/
+│       └── ...
+```
+
+---
+
+## 每日彙整流程
+
+```
+23:55 觸發
+   │
+   ▼
+讀取當日 raw data
+   │
+   ▼
+AI 彙整生成摘要 (SUMMARY_MODEL)
+   │
+   ▼
+按週存放 (YYYY-WW.txt)
+   │
+   ▼
+下次對話時自動加載為上下文
+```
+
+### 彙整效果
+
+- **原始數據**：每天的 raw data 以 24 小時為區間記錄
+- **AI 彙整**：使用更強大的模型生成結構化摘要
+- **週為單位**：方便追蹤用戶關注點的變化
+- **上下文繼承**：每次回覆都會讀取歷史彙整作為背景
+
+---
+
+## 支持的 AI 模型
+
+| 模型 | 參數量 | 說明 | 廠商 |
+|------|--------|------|------|
+| `meta/llama-3.1-70b-instruct` | 70B | 大型開源模型 | NVIDIA |
+| `meta/llama-3.1-8b-instruct` | 8B | 輕量開源模型 | NVIDIA |
+| `meta/llama-3.3-70b-instruct` | 70B | 最新大型模型 | NVIDIA |
+| `mistralai/mistral-7b-instruct-v0.3` | 7B | Mistral 7B | NVIDIA |
+| `mistralai/mixtral-8x7b-instruct-v0.1` | 8x7B | Mixtral MoE | NVIDIA |
+| `nvidia/nemotron-70b-instruct` | 70B | NVIDIA 自家模型 | NVIDIA |
+
+---
 
 ## 快速開始
 
@@ -75,11 +178,14 @@ curl -X POST http://localhost:3005/api/query \
   -d '{"app_id":"demo","user_id":"user1","query_data":"你好"}'
 ```
 
+---
+
 ## 通信協議
 
 ### HTTP API
 
-```
+```javascript
+// 請求
 POST /api/query
 {
   "app_id": "your_app_id",
@@ -92,7 +198,7 @@ POST /api/query
   ]
 }
 
-← 回應
+// 回應
 {
   "success": true,
   "session_id": "sess_xxx_xxx_timestamp",
@@ -135,6 +241,8 @@ await ws.connect();
 const result = await ws.ask('你好');
 ```
 
+---
+
 ## 環境配置
 
 | 變數 | 預設值 | 說明 |
@@ -148,6 +256,8 @@ const result = await ws.ask('你好');
 | `MAX_QUEUE_SIZE` | 100 | 佇列最大長度 |
 | `SESSION_TIMEOUT` | 300000 (5 min) | 排隊超時 |
 | `DATA_DIR` | ./data | 用戶數據存放目錄 |
+
+---
 
 ## API 端點
 
@@ -166,6 +276,8 @@ const result = await ws.ask('你好');
 
 ### 管理 Web UI
 - `GET /` — 管理介面首頁
+
+---
 
 ## 部署
 
@@ -200,30 +312,7 @@ sudo systemctl enable ai-gateway
 sudo systemctl start ai-gateway
 ```
 
-## 數據庫結構
-
-### 三層索引
-
-```
-apps (第一層: app_id)
-  ↓
-users (第二層: user_id + 第三層: local_path)
-```
-
-### 表結構
-
-- `apps` — 應用註冊表
-- `users` — 用戶索引表（含 local_path）
-- `api_keys` — API Key 池
-- `sessions` — Session 歷史
-- `summaries` — 每週彙整記錄
-
-## 每日彙整流程
-
-1. **23:55 自動觸發** — 系統讀取當日 raw data
-2. **AI 彙整** — 使用 SUMMARY_MODEL 生成摘要
-3. **按週存放** — 保存到 `data/summaries/{app_id}/{user_id}/YYYY-WW.txt`
-4. **上下文加載** — 回覆時自動讀取歷史彙整作為背景
+---
 
 ## 客戶端接入指南
 
@@ -257,6 +346,19 @@ const { response } = await response.json();
   ]
 }
 ```
+
+---
+
+## 管理介面功能
+
+| 頁面 | 功能 |
+|------|------|
+| **系統概覽** | 實時顯示在線 Session、請求趨勢、Key 狀態分佈 |
+| **API Key 管理** | 新增/編輯/刪除 API Keys，查看使用統計 |
+| **索引數據庫** | 樹形展示三層索引結構（app → user → path） |
+| **日誌中心** | 查看 Raw Data 和 AI 彙整記錄 |
+
+---
 
 ## 許可證
 
