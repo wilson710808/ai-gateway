@@ -392,18 +392,18 @@ async function lK(){
 
 async function lA(){
   const[ap,us]=await Promise.all([api('/api/admin/apps'),api('/api/admin/users')]);
-  document.getElementById('aT').innerHTML=ap.data.map(a=>`<tr><td><strong>${a.app_id}</strong></td><td>${a.name}</td><td>${a.user_count}</td><td>${ta(a.created_at)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">尚無</td></tr>';
-  document.getElementById('uT').innerHTML=us.data.map(u=>`<tr><td>${u.app_id}</td><td><strong>${u.user_id}</strong></td><td style="font-size:11px;font-family:monospace">${u.local_path||'—'}</td><td>${ta(u.last_active)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">尚無</td></tr>'
+  document.getElementById('aT').innerHTML=ap.data.map(a=>`<tr><td><strong>${a.app_id}</strong></td><td>${a.name}</td><td>${a.user_count}</td><td>${ta(a.created_at)}</td><td><button class="btn bsm bd" onclick="dA('${a.app_id}')">刪除</button></td></tr>`).join('')||'<tr><td colspan="4" class="empty">尚無</td></tr>';
+  document.getElementById('uT').innerHTML=us.data.map(u=>`<tr><td>${u.app_id}</td><td><strong>${u.user_id}</strong></td><td style="font-size:11px;font-family:monospace">${u.local_path||'—'}</td><td>${ta(u.last_active)}</td><td><button class="btn bsm bd" onclick="dU('${u.app_id}','${u.user_id}')">刪除</button></td></tr>`).join('')||'<tr><td colspan="4" class="empty">尚無</td></tr>'
 }
 
 async function lS(){
   const st=document.getElementById('sf').value,r=await api('/api/admin/sessions?limit=50'+(st?'&status='+st:''));
-  document.getElementById('sT').innerHTML=r.data.map(s=>`<tr><td style="font-size:11px;font-family:monospace">${s.session_id.substring(0,35)}…</td><td>${s.app_id}</td><td>${s.user_id}</td><td>${sb(s.status)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.query_preview||'—'}</td><td>${s.duration_ms?(s.duration_ms/1e3).toFixed(1)+'s':'—'}</td><td>${ta(s.created_at)}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">尚無</td></tr>'
+  document.getElementById('sT').innerHTML=r.data.map(s=>`<tr><td style="font-size:11px;font-family:monospace">${s.session_id.substring(0,35)}…</td><td>${s.app_id}</td><td>${s.user_id}</td><td>${sb(s.status)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.query_preview||'—'}</td><td>${s.duration_ms?(s.duration_ms/1e3).toFixed(1)+'s':'—'}</td><td>${ta(s.created_at)}</td><td><button class="btn bsm bd" onclick="dSe(${s.id})">刪除</button></td></tr>`).join('')||'<tr><td colspan="7" class="empty">尚無</td></tr>'
 }
 
 async function lSm(){
   const r=await api('/api/admin/summaries');
-  document.getElementById('smT').innerHTML=r.data.map(s=>`<tr><td>${s.app_id}</td><td>${s.user_id}</td><td>${s.week_start}~${s.week_end}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(s.summary_text||'').substring(0,100)}…</td><td>${ta(s.created_at)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">尚無</td></tr>'
+  document.getElementById('smT').innerHTML=r.data.map(s=>`<tr><td>${s.app_id}</td><td>${s.user_id}</td><td>${s.week_start}~${s.week_end}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(s.summary_text||'').substring(0,100)}…</td><td>${ta(s.created_at)}</td><td><button class="btn bsm bd" onclick="dSm(${s.id})">刪除</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">尚無</td></tr>'
 }
 
 // ---- 新增 Key ----
@@ -460,6 +460,28 @@ async function dK(id){if(confirm('確定刪除?')){await apiD('/api/admin/keys/'
 async function tS(){await apiP('/api/admin/trigger-summary',{});alert('彙整已開始');lSm()}
 
 lO();
+
+// ---- 刪除函數 ----
+async function dA(appId){
+  if(!confirm('確定刪除 App「'+appId+'」及其所有數據？'))return;
+  const r=await apiD('/api/admin/apps/'+encodeURIComponent(appId));
+  alert(r.success?'已刪除 App: '+appId:'刪除失敗');lA();
+}
+async function dU(appId,userId){
+  if(!confirm('確定刪除 User「'+appId+'/'+userId+'」及其所有數據？'))return;
+  const r=await apiD('/api/admin/users/'+encodeURIComponent(appId)+'/'+encodeURIComponent(userId));
+  alert(r.success?'已刪除 User: '+userId:'刪除失敗');lA();
+}
+async function dSe(id){
+  if(!confirm('確定刪除 Session #'+id+'？'))return;
+  const r=await apiD('/api/admin/sessions/'+id);
+  alert(r.success?'已刪除':'刪除失敗');lS();
+}
+async function dSm(id){
+  if(!confirm('確定刪除 Summary #'+id+'？'))return;
+  const r=await apiD('/api/admin/summaries/'+id);
+  alert(r.success?'已刪除':'刪除失敗');lSm();
+}
 </script>
 </body>
 </html>

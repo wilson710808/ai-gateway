@@ -1111,6 +1111,87 @@ app.get('/api/admin/summaries', adminAuth, (req, res) => {
   res.json({ success: true, data: summaries });
 });
 
+
+// ---- 刪除端點 ----
+
+// 刪除 App（含其所有 users + sessions + summaries + 檔案）
+app.delete('/api/admin/apps/:app_id', adminAuth, (req, res) => {
+  const { app_id } = req.params;
+  const app = db.prepare('SELECT * FROM apps WHERE app_id = ?').get(app_id);
+  if (!app) return res.status(404).json({ success: false, error: 'App 不存在' });
+
+  const userCount = db.prepare('SELECT COUNT(*) as c FROM users WHERE app_id = ?').get(app_id).c;
+  const sessionCount = db.prepare('SELECT COUNT(*) as c FROM sessions WHERE app_id = ?').get(app_id).c;
+  const summaryCount = db.prepare('SELECT COUNT(*) as c FROM summaries WHERE app_id = ?').get(app_id).c;
+
+  // 刪除關聯數據
+  db.prepare('DELETE FROM summaries WHERE app_id = ?').run(app_id);
+  db.prepare('DELETE FROM sessions WHERE app_id = ?').run(app_id);
+  db.prepare('DELETE FROM users WHERE app_id = ?').run(app_id);
+  db.prepare('DELETE FROM apps WHERE app_id = ?').run(app_id);
+
+  // 刪除檔案系統數據
+  const dataDir = path.join(__dirname, 'data', app_id);
+  if (fs.existsSync(dataDir)) {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+
+  res.json({ success: true, deleted: { app_id, users: userCount, sessions: sessionCount, summaries: summaryCount } });
+});
+
+// 刪除 User（含其 sessions + summaries + 檔案）
+app.delete('/api/admin/users/:app_id/:user_id', adminAuth, (req, res) => {
+  const { app_id, user_id } = req.params;
+  const user = db.prepare('SELECT * FROM users WHERE app_id = ? AND user_id = ?').get(app_id, user_id);
+  if (!user) return res.status(404).json({ success: false, error: 'User 不存在' });
+
+  const sessionCount = db.prepare('SELECT COUNT(*) as c FROM sessions WHERE app_id = ? AND user_id = ?').get(app_id, user_id).c;
+  const summaryCount = db.prepare('SELECT COUNT(*) as c FROM summaries WHERE app_id = ? AND user_id = ?').get(app_id, user_id).c;
+
+  db.prepare('DELETE FROM summaries WHERE app_id = ? AND user_id = ?').run(app_id, user_id);
+  db.prepare('DELETE FROM sessions WHERE app_id = ? AND user_id = ?').run(app_id, user_id);
+  db.prepare('DELETE FROM users WHERE app_id = ? AND user_id = ?').run(app_id, user_id);
+
+  // 刪除檔案系統數據
+  const dataDir = path.join(__dirname, 'data', app_id, user_id);
+  if (fs.existsSync(dataDir)) {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+
+  res.json({ success: true, deleted: { app_id, user_id, sessions: sessionCount, summaries: summaryCount } });
+});
+
+// 刪除 Session
+app.delete('/api/admin/sessions/:id', adminAuth, (req, res) => {
+  const { id } = req.params;
+  const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+  if (!session) return res.status(404).json({ success: false, error: 'Session 不存在' });
+
+  db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+  res.json({ success: true, deleted: { id, session_id: session.session_id } });
+});
+
+// 刪除 Summary
+app.delete('/api/admin/summaries/:id', adminAuth, (req, res) => {
+  const { id } = req.params;
+  const summary = db.prepare('SELECT * FROM summaries WHERE id = ?').get(id);
+  if (!summary) return res.status(404).json({ success: false, error: 'Summary 不存在' });
+
+  db.prepare('DELETE FROM summaries WHERE id = ?').run(id);
+  res.json({ success: true, deleted: { id } });
+});
+
+// 批量清空 Sessions
+app.delete('/api/admin/sessions', adminAuth, (req, res) => {
+  const { app_id, before_date } = req.query;
+  let sql = 'DELETE FROM sessions WHERE 1=1';
+  const params = [];
+  if (app_id) { sql += ' AND app_id = ?'; params.push(app_id); }
+  if (before_date) { sql += ' AND created_at < ?'; params.push(before_date); }
+  const result = db.prepare(sql).run(...params);
+  res.json({ success: true, deleted: result.changes });
+});
+
 // 手動觸發彙整
 app.post('/api/admin/trigger-summary', adminAuth, async (req, res) => {
   res.json({ success: true, message: '彙整已開始' });
