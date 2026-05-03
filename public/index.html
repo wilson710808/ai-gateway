@@ -298,10 +298,35 @@ const B='/ws/05-ai-gateway';
 
 // ---- 工具函數 ----
 function sw(n,el){document.querySelectorAll('.pn').forEach(p=>p.classList.remove('act'));document.querySelectorAll('.nbtn').forEach(b=>b.classList.remove('act'));document.getElementById('p-'+n).classList.add('act');el.classList.add('act');lP(n)}
-async function api(p){return(await fetch(B+p)).json()}
-async function apiP(p,b){return(await fetch(B+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json()}
-async function apiU(p,b){return(await fetch(B+p,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json()}
-async function apiD(p){return(await fetch(B+p,{method:'DELETE'})).json()}
+// Admin Token — 首次訪問時輸入，存入 sessionStorage
+let _adminToken = sessionStorage.getItem('gw_admin_token') || '';
+if (!_adminToken) {
+  _adminToken = prompt('請輸入 Admin Token:') || '';
+  if (_adminToken) sessionStorage.setItem('gw_admin_token', _adminToken);
+}
+function authHeaders(h={}) {
+  return _adminToken ? {...h, 'Authorization': 'Bearer ' + _adminToken} : h;
+}
+async function api(p) {
+  const r = await fetch(B+p, {headers: authHeaders()});
+  if (r.status === 401) { sessionStorage.removeItem('gw_admin_token'); location.reload(); }
+  return r.json();
+}
+async function apiP(p,b) {
+  const r = await fetch(B+p, {method:'POST', headers: authHeaders({'Content-Type':'application/json'}), body:JSON.stringify(b)});
+  if (r.status === 401) { sessionStorage.removeItem('gw_admin_token'); location.reload(); }
+  return r.json();
+}
+async function apiU(p,b) {
+  const r = await fetch(B+p, {method:'PUT', headers: authHeaders({'Content-Type':'application/json'}), body:JSON.stringify(b)});
+  if (r.status === 401) { sessionStorage.removeItem('gw_admin_token'); location.reload(); }
+  return r.json();
+}
+async function apiD(p) {
+  const r = await fetch(B+p, {method:'DELETE', headers: authHeaders()});
+  if (r.status === 401) { sessionStorage.removeItem('gw_admin_token'); location.reload(); }
+  return r.json();
+}
 function mk(k){return!k||k.length<8?k:k.substring(0,6)+'...'+k.slice(-4)}
 function ta(i){if(!i)return'—';const d=Date.now()-new Date(i).getTime();return d<6e4?Math.floor(d/1e3)+'s':d<36e5?Math.floor(d/6e4)+'m':d<864e5?Math.floor(d/36e5)+'h':Math.floor(d/864e5)+'d'}
 function sb(s){const m={completed:'bok',active:'bin',queued:'bwn',failed:'ber',timeout:'ber'};return`<span class="bge ${m[s]||'bin'}">${s}</span>`}
