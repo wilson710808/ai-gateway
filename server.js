@@ -137,7 +137,7 @@ db.exec(`
 // 3. 加權輪詢分配：優先選擇當前併發數最低的 key，實現負載均衡
 // 4. 僵死 session 回收：超時未 release 的 session 自動釋放併發槽位
 // 5. 佇列公平調度：FIFO + release 時嘗試喚醒所有可能匹配的等待者
-// ============================================
+// 6. 加權輪詢均衡：結合即時併發 + 歷史累計 + round-robin 指標，確保 key 平均使用
 class APIKeyPool {
   constructor() {
     this.keys = [];
@@ -147,11 +147,15 @@ class APIKeyPool {
     this.rateWindows = new Map();
     // 等待佇列
     this.queue = []; // { sessionId, resolve, reject, timeout, enqueuedAt }
+    // Round-Robin 指標：每次 acquire 後推進，確保低頻時均勻輪換
+    this._rrIndex = 0;
+    // Runtime 累計計數器（重啟後從 DB total_calls 同步）
+    this._runtimeCalls = new Map(); // keyId → number
     // 定時清理僵死 session
     this._staleCheckInterval = setInterval(() => this._reapStaleSessions(), 30000);
   }
 
-  /** 從 DB 載入活躍 key */
+  /** 從 DB 載入活躍 key，同步歷史累計到 runtime 計數器 */
   _loadKeys() {
     const rows = db.prepare('SELECT * FROM api_keys WHERE is_active = 1').all();
     this.keys = rows;
@@ -163,15 +167,27 @@ class APIKeyPool {
       if (!this.rateWindows.has(key.id)) {
         this.rateWindows.set(key.id, []);
       }
+      // 同步 DB total_calls 到 runtime 計數器（重啟後保留歷史）
+      if (!this._runtimeCalls.has(key.id)) {
+        this._runtimeCalls.set(key.id, key.total_calls || 0);
+      }
     }
     // 清理已刪除 key 的追蹤
-    for (const keyId of this.activeSessions.keys()) {
+    for (const keyId of [...this.activeSessions.keys()]) {
       if (!this.keys.some(k => k.id === keyId)) {
         this.activeSessions.delete(keyId);
         this.rateWindows.delete(keyId);
+        this._runtimeCalls.delete(keyId);
       }
     }
-    console.log(`[APIKeyPool] 載入 ${rows.length} 個活躍 API Key (總併發容量: ${rows.reduce((s, k) => s + this._getMaxConcurrent(k), 0)})`);
+    // 修正 _rrIndex 避免越界
+    if (this._rrIndex >= this.keys.length) this._rrIndex = 0;
+
+    const totalConcurrentCap = rows.reduce((s, k) => s + this._getMaxConcurrent(k), 0);
+    console.log(`[APIKeyPool] 載入 ${rows.length} 個活躍 API Key (總併發容量: ${totalConcurrentCap})`);
+    rows.forEach(k => {
+      console.log(`  Key#${k.id} (${k.label}): total_calls=${k.total_calls}, max_concurrent=${this._getMaxConcurrent(k)}`);
+    });
   }
 
   reload() {
@@ -211,32 +227,61 @@ class APIKeyPool {
     }
   }
 
-  /** 選擇最佳 key：加權輪詢（併發數最低 + 速率未超限） */
+  /**
+   * 選擇最佳 key：三維加權評分
+   *
+   * 評分維度：
+   *   1. 即時併發（權重 50%）— 併發數越低分越高
+   *   2. 歷史累計調用（權重 30%）— 調用次數越少分越高
+   *   3. Round-Robin 輪次（權重 20%）— 距上次分配越遠分越高
+   *
+   * 結果：高頻時偏向低併發 key，低頻時確保均勻輪換，
+   *       長期來看各 key 的 total_calls 會趨於平均
+   */
   _selectBestKey() {
-    const now = Date.now();
     const candidates = this.keys.filter(key => {
-      const active = this.activeSessions.get(key.id);
-      const concurrentCount = active ? active.size : 0;
-      const maxConcurrent = this._getMaxConcurrent(key);
-      const withinConcurrent = concurrentCount < maxConcurrent;
-      const withinRate = this._checkRateLimit(key.id);
-      if (!withinRate) {
-        // 如果此 key 速率超限，嘗試下一個
-        return false;
-      }
-      return withinConcurrent;
+      const concurrentCount = this.activeSessions.get(key.id)?.size || 0;
+      if (concurrentCount >= this._getMaxConcurrent(key)) return false;
+      if (!this._checkRateLimit(key.id)) return false;
+      return true;
     });
 
     if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
 
-    // 按當前併發數排序，選併發最低的（負載均衡）
-    candidates.sort((a, b) => {
-      const aCount = (this.activeSessions.get(a.id)?.size || 0);
-      const bCount = (this.activeSessions.get(b.id)?.size || 0);
-      return aCount - bCount;
-    });
+    // 計算各維度的最大值用於歸一化
+    const maxConcurrent = Math.max(...candidates.map(k => (this.activeSessions.get(k.id)?.size || 0)), 1);
+    const maxTotalCalls = Math.max(...candidates.map(k => this._runtimeCalls.get(k.id) || 0), 1);
 
-    return candidates[0];
+    let bestKey = null;
+    let bestScore = -1;
+
+    for (const key of candidates) {
+      const concurrentCount = this.activeSessions.get(key.id)?.size || 0;
+      const totalCalls = this._runtimeCalls.get(key.id) || 0;
+      const keyIndex = this.keys.indexOf(key);
+
+      // 1. 併發分數 (0~1)：併發越低分越高
+      const concurrentScore = 1 - (concurrentCount / maxConcurrent);
+
+      // 2. 歷史調用分數 (0~1)：調用越少分越高
+      const callScore = 1 - (totalCalls / maxTotalCalls);
+
+      // 3. Round-Robin 分數 (0~1)：距離 _rrIndex 越遠分越高
+      //    下一位 = _rrIndex 本身得 1.0，其餘按距離遞減
+      const distance = (keyIndex - this._rrIndex + this.keys.length) % this.keys.length;
+      const rrScore = distance === 0 ? 1.0 : Math.max(0, 1 - (distance / this.keys.length));
+
+      // 加權綜合分數
+      const score = (concurrentScore * 0.5) + (callScore * 0.3) + (rrScore * 0.2);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestKey = key;
+      }
+    }
+
+    return bestKey;
   }
 
   /**
@@ -246,7 +291,6 @@ class APIKeyPool {
    */
   async acquire(sessionId) {
     const key = this._selectBestKey();
-
     if (key) {
       return this._assignKey(key, sessionId);
     }
@@ -279,13 +323,21 @@ class APIKeyPool {
     // 記錄速率窗口
     this._recordRateHit(key.id);
 
+    // 更新 runtime 累計計數器
+    this._runtimeCalls.set(key.id, (this._runtimeCalls.get(key.id) || 0) + 1);
+
     // 更新 DB 統計
     db.prepare('UPDATE api_keys SET last_used = ?, total_calls = total_calls + 1 WHERE id = ?')
       .run(new Date().toISOString(), key.id);
 
+    // 推進 Round-Robin 指標到下一個 key
+    const keyIndex = this.keys.indexOf(key);
+    this._rrIndex = (keyIndex + 1) % this.keys.length;
+
     const concurrentCount = this.activeSessions.get(key.id).size;
     const maxConcurrent = this._getMaxConcurrent(key);
-    console.log(`[APIKeyPool] Key#${key.id} (${key.label}) 分配給 ${sessionId} (當前併發: ${concurrentCount}/${maxConcurrent})`);
+    const runtimeCalls = this._runtimeCalls.get(key.id);
+    console.log(`[APIKeyPool] Key#${key.id} (${key.label}) 分配給 ${sessionId} (併發: ${concurrentCount}/${maxConcurrent}, 累計: ${runtimeCalls})`);
     return key;
   }
 
@@ -364,6 +416,7 @@ class APIKeyPool {
       const maxConcurrent = this._getMaxConcurrent(k);
       const rateWindow = this.rateWindows.get(k.id) || [];
       const recentHits = rateWindow.filter(ts => Date.now() - ts < 60000).length;
+      const runtimeCalls = this._runtimeCalls.get(k.id) || 0;
       return {
         id: k.id,
         label: k.label,
@@ -371,6 +424,8 @@ class APIKeyPool {
         maxConcurrent,
         rateLimit: this._getRateLimit(k),
         rateUsed: recentHits,
+        totalCalls: k.total_calls,
+        runtimeCalls,
         model: k.model,
       };
     });
@@ -380,6 +435,7 @@ class APIKeyPool {
       totalConcurrent: keyDetails.reduce((sum, k) => sum + k.concurrent, 0),
       maxTotalConcurrent: keyDetails.reduce((sum, k) => sum + k.maxConcurrent, 0),
       queueLength: this.queue.length,
+      rrIndex: this._rrIndex,
       keys: keyDetails,
     };
   }
