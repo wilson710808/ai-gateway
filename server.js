@@ -3,11 +3,17 @@
  * 
  * 核心功能：
  * 1. 三層索引數據庫 (app_id → user_id → local_path)
- * 2. TCP/IP Session 管理 + API Key 池化
+ * 2. TCP/IP Session 管理 + API Key 池化 v2（併發安全 + 速率限制）
  * 3. 每日 Raw Data 記錄 + 23:55 AI 彙整
  * 4. 管理 Web UI
+ * 
+ * v2 API Key Pool 改進：
+ * - 取消獨佔鎖定，同一 key 支持多 session 併發
+ * - 滑動窗口速率限制取代固定窗口
+ * - 加權輪詢：優先分配併發數最低的 key
+ * - 僵死 session 自動回收機制
+ * - Queue 公平調度：release 時嘗試喚醒所有等待者
  */
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -24,10 +30,12 @@ const CONFIG = {
   dbPath: process.env.DB_PATH || path.join(__dirname, 'ai-gateway.db'),
   defaultAIModel: process.env.AI_MODEL || 'meta/llama-3.1-8b-instruct',
   defaultAIBaseUrl: process.env.AI_BASE_URL || 'https://integrate.api.nvidia.com/v1',
-  summaryTime: process.env.SUMMARY_TIME || '23:55',     // 每日彙整觸發時間
+  summaryTime: process.env.SUMMARY_TIME || '23:55', // 每日彙整觸發時間
   summaryModel: process.env.SUMMARY_MODEL || 'meta/llama-3.3-70b-instruct', // 彙整用更強模型
   maxQueueSize: parseInt(process.env.MAX_QUEUE_SIZE || '100'),
   sessionTimeout: parseInt(process.env.SESSION_TIMEOUT || '300000'), // 5 分鐘
+  maxConcurrentPerKey: parseInt(process.env.MAX_CONCURRENT_PER_KEY || '5'), // 每 key 最大併發數
+  keyStaleTimeout: parseInt(process.env.KEY_STALE_TIMEOUT || '120000'), // 2 分鐘：僵死 session 自動釋放
 };
 
 // 確保數據目錄存在
@@ -75,7 +83,8 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_used DATETIME,
     total_calls INTEGER DEFAULT 0,
-    rate_limit INTEGER DEFAULT 10  -- 每分鐘最大請求數
+    rate_limit INTEGER DEFAULT 10, -- 每分鐘最大請求數
+    max_concurrent INTEGER DEFAULT 5  -- 每 key 最大併發數
   );
 
   -- Session 日誌
@@ -120,45 +129,129 @@ db.exec(`
 `);
 
 // ============================================
-// API Key 池化管理器
+// API Key 池化管理器 v2 — 併發安全 + 速率限制
+//
+// 核心設計：
+// 1. 取消獨佔鎖定：一個 key 可同時服務多個 session（maxConcurrent 控制）
+// 2. 滑動窗口速率限制：精確追蹤最近 60s 內的請求數，避免固定窗口邊界突增
+// 3. 加權輪詢分配：優先選擇當前併發數最低的 key，實現負載均衡
+// 4. 僵死 session 回收：超時未 release 的 session 自動釋放併發槽位
+// 5. 佇列公平調度：FIFO + release 時嘗試喚醒所有可能匹配的等待者
 // ============================================
 class APIKeyPool {
   constructor() {
     this.keys = [];
-    this.locked = new Map();   // apiKeyId → sessionId
-    this.queue = [];            // 排隊的 session
-    this.rateCounters = new Map(); // apiKeyId → { count, resetAt }
-    this._loadKeys();
+    // 每個 key 的併發追蹤：keyId → Set<{ sessionId, acquiredAt }>
+    this.activeSessions = new Map();
+    // 滑動窗口速率計數：keyId → [timestamp, ...]（最近 60s 內的請求時間戳）
+    this.rateWindows = new Map();
+    // 等待佇列
+    this.queue = []; // { sessionId, resolve, reject, timeout, enqueuedAt }
+    // 定時清理僵死 session
+    this._staleCheckInterval = setInterval(() => this._reapStaleSessions(), 30000);
   }
 
+  /** 從 DB 載入活躍 key */
   _loadKeys() {
     const rows = db.prepare('SELECT * FROM api_keys WHERE is_active = 1').all();
     this.keys = rows;
-    console.log(`[APIKeyPool] 載入 ${rows.length} 個活躍 API Key`);
+    // 確保每個 key 的追蹤結構存在
+    for (const key of this.keys) {
+      if (!this.activeSessions.has(key.id)) {
+        this.activeSessions.set(key.id, new Set());
+      }
+      if (!this.rateWindows.has(key.id)) {
+        this.rateWindows.set(key.id, []);
+      }
+    }
+    // 清理已刪除 key 的追蹤
+    for (const keyId of this.activeSessions.keys()) {
+      if (!this.keys.some(k => k.id === keyId)) {
+        this.activeSessions.delete(keyId);
+        this.rateWindows.delete(keyId);
+      }
+    }
+    console.log(`[APIKeyPool] 載入 ${rows.length} 個活躍 API Key (總併發容量: ${rows.reduce((s, k) => s + this._getMaxConcurrent(k), 0)})`);
   }
 
   reload() {
     this._loadKeys();
+    // reload 後嘗試喚醒佇列（可能新增了 key）
+    this._drainQueue();
   }
 
+  /** 獲取 key 的最大併發數 */
+  _getMaxConcurrent(key) {
+    return key.max_concurrent || CONFIG.maxConcurrentPerKey;
+  }
+
+  /** 獲取 key 的速率限制（每分鐘） */
+  _getRateLimit(key) {
+    return key.rate_limit || 10;
+  }
+
+  /** 滑動窗口速率檢查：最近 60s 內的請求數是否超限 */
+  _checkRateLimit(keyId) {
+    const window = this.rateWindows.get(keyId);
+    if (!window) return true;
+    const now = Date.now();
+    const key = this.keys.find(k => k.id === keyId);
+    const limit = this._getRateLimit(key);
+    // 過濾掉超過 60s 的記錄
+    const recent = window.filter(ts => now - ts < 60000);
+    this.rateWindows.set(keyId, recent);
+    return recent.length < limit;
+  }
+
+  /** 記錄一次速率窗口請求 */
+  _recordRateHit(keyId) {
+    const window = this.rateWindows.get(keyId);
+    if (window) {
+      window.push(Date.now());
+    }
+  }
+
+  /** 選擇最佳 key：加權輪詢（併發數最低 + 速率未超限） */
+  _selectBestKey() {
+    const now = Date.now();
+    const candidates = this.keys.filter(key => {
+      const active = this.activeSessions.get(key.id);
+      const concurrentCount = active ? active.size : 0;
+      const maxConcurrent = this._getMaxConcurrent(key);
+      const withinConcurrent = concurrentCount < maxConcurrent;
+      const withinRate = this._checkRateLimit(key.id);
+      if (!withinRate) {
+        // 如果此 key 速率超限，嘗試下一個
+        return false;
+      }
+      return withinConcurrent;
+    });
+
+    if (candidates.length === 0) return null;
+
+    // 按當前併發數排序，選併發最低的（負載均衡）
+    candidates.sort((a, b) => {
+      const aCount = (this.activeSessions.get(a.id)?.size || 0);
+      const bCount = (this.activeSessions.get(b.id)?.size || 0);
+      return aCount - bCount;
+    });
+
+    return candidates[0];
+  }
+
+  /**
+   * 獲取一個可用的 API Key
+   * @param {string} sessionId - 當前 session ID
+   * @returns {Promise<Object>} - 返回可用的 key 物件
+   */
   async acquire(sessionId) {
-    // 找一個可用的 key（未鎖定 + 未超過速率限制）
-    for (const key of this.keys) {
-      if (this.locked.has(key.id)) continue;
-      if (!this._checkRateLimit(key.id)) continue;
+    const key = this._selectBestKey();
 
-      // 鎖定此 key 給此 session
-      this.locked.set(key.id, sessionId);
-      this._incrementRate(key.id);
-
-      // 更新最後使用時間
-      db.prepare('UPDATE api_keys SET last_used = ?, total_calls = total_calls + 1 WHERE id = ?')
-        .run(new Date().toISOString(), key.id);
-
-      return key;
+    if (key) {
+      return this._assignKey(key, sessionId);
     }
 
-    // 沒有可用 key → 加入佇列
+    // 無可用 key → 加入佇列等待
     if (this.queue.length >= CONFIG.maxQueueSize) {
       throw new Error('Queue full — too many concurrent requests');
     }
@@ -170,60 +263,136 @@ class APIKeyPool {
         reject(new Error('Session queued timeout'));
       }, CONFIG.sessionTimeout);
 
-      this.queue.push({ sessionId, resolve, reject, timeout });
+      this.queue.push({ sessionId, resolve, reject, timeout, enqueuedAt: Date.now() });
       console.log(`[APIKeyPool] Session ${sessionId} 排隊中 (佇列長度: ${this.queue.length})`);
     });
   }
 
-  release(keyId) {
-    this.locked.delete(keyId);
+  /** 分配 key 給 session（內部方法） */
+  _assignKey(key, sessionId) {
+    // 記錄併發追蹤
+    if (!this.activeSessions.has(key.id)) {
+      this.activeSessions.set(key.id, new Set());
+    }
+    this.activeSessions.get(key.id).add({ sessionId, acquiredAt: Date.now() });
 
-    // 如果佇列中有等待的 session，分配 key
-    if (this.queue.length > 0) {
-      const key = this.keys.find(k => k.id === keyId && !this.locked.has(keyId));
-      if (key && this.queue.length > 0) {
-        const next = this.queue.shift();
-        clearTimeout(next.timeout);
-        this.locked.set(keyId, next.sessionId);
-        this._incrementRate(keyId);
-        db.prepare('UPDATE api_keys SET last_used = ?, total_calls = total_calls + 1 WHERE id = ?')
-          .run(new Date().toISOString(), keyId);
-        next.resolve(key);
+    // 記錄速率窗口
+    this._recordRateHit(key.id);
+
+    // 更新 DB 統計
+    db.prepare('UPDATE api_keys SET last_used = ?, total_calls = total_calls + 1 WHERE id = ?')
+      .run(new Date().toISOString(), key.id);
+
+    const concurrentCount = this.activeSessions.get(key.id).size;
+    const maxConcurrent = this._getMaxConcurrent(key);
+    console.log(`[APIKeyPool] Key#${key.id} (${key.label}) 分配給 ${sessionId} (當前併發: ${concurrentCount}/${maxConcurrent})`);
+    return key;
+  }
+
+  /**
+   * 釋放 key 的併發槽位
+   * @param {number} keyId - API Key ID
+   * @param {string} sessionId - 要釋放的 session ID
+   */
+  release(keyId, sessionId) {
+    const active = this.activeSessions.get(keyId);
+    if (active) {
+      // 找到並移除對應 session 的追蹤記錄
+      for (const entry of active) {
+        if (entry.sessionId === sessionId) {
+          active.delete(entry);
+          break;
+        }
+      }
+      const concurrentCount = active.size;
+      const key = this.keys.find(k => k.id === keyId);
+      console.log(`[APIKeyPool] Key#${keyId} 釋放 ${sessionId} (剩餘併發: ${concurrentCount}/${this._getMaxConcurrent(key)})`);
+    }
+
+    // 嘗試喚醒佇列中等待的 session
+    this._drainQueue();
+  }
+
+  /** 從佇列中按 FIFO 分配可用 key */
+  _drainQueue() {
+    while (this.queue.length > 0) {
+      const key = this._selectBestKey();
+      if (!key) break; // 沒有可用 key 了
+
+      const next = this.queue.shift();
+      clearTimeout(next.timeout);
+
+      try {
+        const assignedKey = this._assignKey(key, next.sessionId);
+        next.resolve(assignedKey);
+      } catch (err) {
+        next.reject(err);
       }
     }
   }
 
-  _checkRateLimit(keyId) {
-    const counter = this.rateCounters.get(keyId);
-    if (!counter) return true;
-    if (Date.now() > counter.resetAt) {
-      this.rateCounters.delete(keyId);
-      return true;
+  /** 回收僵死 session（超時未 release） */
+  _reapStaleSessions() {
+    const now = Date.now();
+    let reapedCount = 0;
+
+    for (const [keyId, active] of this.activeSessions) {
+      const staleEntries = [];
+      for (const entry of active) {
+        if (now - entry.acquiredAt > CONFIG.keyStaleTimeout) {
+          staleEntries.push(entry);
+        }
+      }
+      for (const entry of staleEntries) {
+        active.delete(entry);
+        reapedCount++;
+        console.warn(`[APIKeyPool] 回收僵死 session: ${entry.sessionId} (Key#${keyId}, 已佔用 ${Math.round((now - entry.acquiredAt) / 1000)}s)`);
+      }
     }
-    const key = this.keys.find(k => k.id === keyId);
-    return counter.count < (key?.rate_limit || 10);
+
+    if (reapedCount > 0) {
+      console.log(`[APIKeyPool] 回收了 ${reapedCount} 個僵死 session`);
+      this._drainQueue();
+    }
   }
 
-  _incrementRate(keyId) {
-    let counter = this.rateCounters.get(keyId);
-    if (!counter || Date.now() > counter.resetAt) {
-      counter = { count: 0, resetAt: Date.now() + 60000 };
-    }
-    counter.count++;
-    this.rateCounters.set(keyId, counter);
-  }
-
+  /** 取得池狀態（供 health/stats API 使用） */
   getStatus() {
+    const keyDetails = this.keys.map(k => {
+      const active = this.activeSessions.get(k.id);
+      const concurrentCount = active ? active.size : 0;
+      const maxConcurrent = this._getMaxConcurrent(k);
+      const rateWindow = this.rateWindows.get(k.id) || [];
+      const recentHits = rateWindow.filter(ts => Date.now() - ts < 60000).length;
+      return {
+        id: k.id,
+        label: k.label,
+        concurrent: concurrentCount,
+        maxConcurrent,
+        rateLimit: this._getRateLimit(k),
+        rateUsed: recentHits,
+        model: k.model,
+      };
+    });
+
     return {
       totalKeys: this.keys.length,
-      available: this.keys.filter(k => !this.locked.has(k.id)).length,
-      locked: this.locked.size,
+      totalConcurrent: keyDetails.reduce((sum, k) => sum + k.concurrent, 0),
+      maxTotalConcurrent: keyDetails.reduce((sum, k) => sum + k.maxConcurrent, 0),
       queueLength: this.queue.length,
+      keys: keyDetails,
     };
+  }
+
+  /** 銷毀時清理定時器 */
+  destroy() {
+    clearInterval(this._staleCheckInterval);
   }
 }
 
 const keyPool = new APIKeyPool();
+// 初始載入
+keyPool._loadKeys();
 
 // ============================================
 // 用戶數據路徑管理
@@ -232,7 +401,7 @@ function getOrCreateUserPath(appId, userId) {
   // 查找現有用戶
   const existing = db.prepare('SELECT local_path FROM users WHERE app_id = ? AND user_id = ?')
     .get(appId, userId);
-  
+
   if (existing && existing.local_path) {
     // 確保目錄存在
     if (!fs.existsSync(existing.local_path)) {
@@ -273,13 +442,13 @@ class RawDataLogger {
   log(appId, userId, queryData) {
     const key = `${appId}_${userId}`;
     const today = new Date().toISOString().split('T')[0];
-    
+
     if (!this.buffers.has(key)) {
       this.buffers.set(key, { lines: [], date: today });
     }
 
     const buf = this.buffers.get(key);
-    
+
     // 如果跨天了，先 flush 舊的
     if (buf.date !== today) {
       this._flushToFile(key, buf);
@@ -334,7 +503,7 @@ async function callAI(apiKey, queryData, contextHistory = '', explicitMessages =
   const model = apiKey.model || CONFIG.defaultAIModel;
 
   const messages = [];
-  
+
   // 如果有背景彙整，加入系統提示
   if (contextHistory) {
     messages.push({
@@ -378,13 +547,13 @@ async function callAI(apiKey, queryData, contextHistory = '', explicitMessages =
 // ============================================
 async function runDailySummary() {
   console.log('[Summary] 開始每日彙整...');
-  
+
   // flush 所有 raw data
   rawDataLogger.flushAll();
 
   // 取得所有用戶
   const users = db.prepare('SELECT app_id, user_id, local_path FROM users').all();
-  
+
   const today = new Date();
   const weekStart = getWeekStart(today);
   const weekEnd = getWeekEnd(today);
@@ -393,17 +562,14 @@ async function runDailySummary() {
     try {
       // 收集本週的 raw data
       const weekRawData = collectWeekRawData(user.local_path, weekStart, weekEnd);
-      
       if (!weekRawData || weekRawData.trim().length === 0) {
         console.log(`[Summary] ${user.app_id}/${user.user_id}: 無本週數據，跳過`);
         continue;
       }
 
-      // 使用彙整專用 API Key
-      let summaryKey = keyPool.keys.find(k => k.id === Math.min(...keyPool.keys.map(kk => kk.id)));
-      if (!summaryKey && keyPool.keys.length > 0) summaryKey = keyPool.keys[0];
-      
-      if (!summaryKey) {
+      // 使用彙整專用 API Key（選併發最低的）
+      const bestKey = keyPool._selectBestKey() || keyPool.keys[0];
+      if (!bestKey) {
         console.log('[Summary] 無可用 API Key，跳過彙整');
         break;
       }
@@ -422,7 +588,7 @@ ${weekRawData.substring(0, 8000)}
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${summaryKey.key_value}`,
+          'Authorization': `Bearer ${bestKey.key_value}`,
         },
         body: JSON.stringify({
           model: CONFIG.summaryModel,
@@ -504,7 +670,8 @@ function getUserContextHistory(appId, userId) {
   const summaries = db.prepare(`
     SELECT summary_text FROM summaries
     WHERE app_id = ? AND user_id = ?
-    ORDER BY week_start DESC LIMIT 4
+    ORDER BY week_start DESC
+    LIMIT 4
   `).all(appId, userId);
 
   if (summaries.length === 0) return '';
@@ -567,11 +734,14 @@ app.post('/api/query', async (req, res) => {
     // 取得用戶歷史彙整作為背景
     const contextHistory = getUserContextHistory(app_id, user_id);
 
-    // 調用 AI
-    const aiResponse = await callAI(apiKey, query_data, contextHistory, reqMessages);
-
-    // 釋放 API Key
-    keyPool.release(apiKey.id);
+    // 調用 AI（確保 finally 中一定 release）
+    let aiResponse;
+    try {
+      aiResponse = await callAI(apiKey, query_data, contextHistory, reqMessages);
+    } finally {
+      // 無論成功或失敗，都釋放 API Key 併發槽位
+      keyPool.release(apiKey.id, sessionId);
+    }
 
     const duration = Date.now() - startTime;
 
@@ -597,7 +767,7 @@ app.post('/api/query', async (req, res) => {
   } catch (err) {
     // 更新 session 失敗狀態
     db.prepare("UPDATE sessions SET status = 'failed', response_preview = ?, completed_at = ? WHERE session_id = ?")
-      .run(err.message, new Date().toISOString(), sessionId);
+      .run(err.message.substring(0, 200), new Date().toISOString(), sessionId);
 
     res.status(500).json({
       success: false,
@@ -616,7 +786,7 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     keyPool: poolStatus,
-    version: '1.0.0',
+    version: '2.0.0',
   });
 });
 
@@ -624,19 +794,34 @@ app.get('/api/health', (req, res) => {
 
 // API Keys 管理
 app.get('/api/admin/keys', (req, res) => {
-  const keys = db.prepare('SELECT id, label, base_url, model, is_active, total_calls, last_used, rate_limit FROM api_keys ORDER BY id').all();
+  const keys = db.prepare('SELECT id, label, base_url, model, is_active, total_calls, last_used, rate_limit, max_concurrent FROM api_keys ORDER BY id').all();
+  // 附加當前併發狀態
+  const poolStatus = keyPool.getStatus();
+  for (const key of keys) {
+    const poolKey = poolStatus.keys.find(k => k.id === key.id);
+    if (poolKey) {
+      key.current_concurrent = poolKey.concurrent;
+      key.rate_used = poolKey.rateUsed;
+    }
+  }
   res.json({ success: true, data: keys });
 });
 
 app.post('/api/admin/keys', (req, res) => {
-  const { key_value, label, base_url, model, rate_limit } = req.body;
+  const { key_value, label, base_url, model, rate_limit, max_concurrent } = req.body;
   if (!key_value) return res.status(400).json({ error: '缺少 key_value' });
 
   try {
     const result = db.prepare(
-      'INSERT INTO api_keys (key_value, label, base_url, model, rate_limit) VALUES (?, ?, ?, ?, ?)'
-    ).run(key_value, label || '', base_url || CONFIG.defaultAIBaseUrl, model || CONFIG.defaultAIModel, rate_limit || 10);
-    
+      'INSERT INTO api_keys (key_value, label, base_url, model, rate_limit, max_concurrent) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(
+      key_value,
+      label || '',
+      base_url || CONFIG.defaultAIBaseUrl,
+      model || CONFIG.defaultAIModel,
+      rate_limit || 10,
+      max_concurrent || CONFIG.maxConcurrentPerKey
+    );
     keyPool.reload();
     res.json({ success: true, id: result.lastInsertRowid });
   } catch (err) {
@@ -648,12 +833,17 @@ app.post('/api/admin/keys', (req, res) => {
 });
 
 app.put('/api/admin/keys/:id', (req, res) => {
-  const { label, base_url, model, is_active, rate_limit } = req.body;
+  const { label, base_url, model, is_active, rate_limit, max_concurrent } = req.body;
   db.prepare(`
-    UPDATE api_keys SET label = COALESCE(?, label), base_url = COALESCE(?, base_url),
-    model = COALESCE(?, model), is_active = COALESCE(?, is_active),
-    rate_limit = COALESCE(?, rate_limit) WHERE id = ?
-  `).run(label, base_url, model, is_active, rate_limit, req.params.id);
+    UPDATE api_keys SET
+      label = COALESCE(?, label),
+      base_url = COALESCE(?, base_url),
+      model = COALESCE(?, model),
+      is_active = COALESCE(?, is_active),
+      rate_limit = COALESCE(?, rate_limit),
+      max_concurrent = COALESCE(?, max_concurrent)
+    WHERE id = ?
+  `).run(label, base_url, model, is_active, rate_limit, max_concurrent, req.params.id);
   keyPool.reload();
   res.json({ success: true });
 });
@@ -690,12 +880,14 @@ app.get('/api/admin/sessions', (req, res) => {
   const { app_id, user_id, status, limit } = req.query;
   let sql = 'SELECT * FROM sessions WHERE 1=1';
   const params = [];
+
   if (app_id) { sql += ' AND app_id = ?'; params.push(app_id); }
   if (user_id) { sql += ' AND user_id = ?'; params.push(user_id); }
   if (status) { sql += ' AND status = ?'; params.push(status); }
+
   sql += ' ORDER BY created_at DESC LIMIT ?';
   params.push(parseInt(limit) || 100);
-  
+
   const sessions = db.prepare(sql).all(...params);
   res.json({ success: true, data: sessions });
 });
@@ -705,10 +897,11 @@ app.get('/api/admin/summaries', (req, res) => {
   const { app_id, user_id } = req.query;
   let sql = 'SELECT * FROM summaries WHERE 1=1';
   const params = [];
+
   if (app_id) { sql += ' AND app_id = ?'; params.push(app_id); }
   if (user_id) { sql += ' AND user_id = ?'; params.push(user_id); }
+
   sql += ' ORDER BY week_start DESC LIMIT 50';
-  
   const summaries = db.prepare(sql).all(...params);
   res.json({ success: true, data: summaries });
 });
@@ -757,11 +950,9 @@ function scheduleDailySummary() {
   const [h, m] = CONFIG.summaryTime.split(':').map(Number);
   const target = new Date(now);
   target.setHours(h, m, 0, 0);
-  
   if (target <= now) {
     target.setDate(target.getDate() + 1);
   }
-
   const delay = target - now;
   console.log(`[Scheduler] 下次彙整: ${target.toISOString()} (${Math.round(delay / 60000)} 分鐘後)`);
 
@@ -782,6 +973,7 @@ setInterval(() => {
 // 優雅關閉
 process.on('SIGINT', () => {
   console.log('\n[Server] 正在關閉...');
+  keyPool.destroy();
   rawDataLogger.flushAll();
   db.close();
   process.exit(0);
@@ -791,11 +983,12 @@ process.on('SIGINT', () => {
 // 啟動
 // ============================================
 app.listen(CONFIG.port, '127.0.0.1', () => {
-  console.log(`🤖 AI Gateway Server (HTTPS) 已啟動: http://127.0.0.1:${CONFIG.port}`);
+  const poolStatus = keyPool.getStatus();
+  console.log(`🤖 AI Gateway Server v2.0 已啟動: http://127.0.0.1:${CONFIG.port}`);
   console.log(`📊 管理介面: http://127.0.0.1:${CONFIG.port}/admin`);
-  console.log(`🔑 API Key 池: ${keyPool.getStatus().totalKeys} 個`);
+  console.log(`🔑 API Key 池: ${poolStatus.totalKeys} 個 (總併發容量: ${poolStatus.maxTotalConcurrent})`);
   console.log(`📁 數據目錄: ${CONFIG.dataDir}`);
   console.log(`⏰ 彙整時間: ${CONFIG.summaryTime}`);
-
+  console.log(`⚡ 每 key 最大併發: ${CONFIG.maxConcurrentPerKey} | 僵死超時: ${CONFIG.keyStaleTimeout / 1000}s`);
   scheduleDailySummary();
 });
