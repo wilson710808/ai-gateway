@@ -1257,6 +1257,18 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 // 優雅關閉
+// 全局錯誤處理 — 防止未捕獲的異常導致進程崩潰
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Server] 未處理的 Promise 拒絕:', reason);
+  // 不退出進程，只記錄錯誤
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Server] 未捕獲的異常:', err.message);
+  console.error(err.stack);
+  // 記錄後不退出，讓服務繼續運行
+});
+
 process.on('SIGTERM', () => {
   console.log('\n[Server] 收到 SIGTERM，正在關閉...');
   keyPool.destroy();
