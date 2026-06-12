@@ -879,6 +879,20 @@ app.get('/', (req, res) => {
 // ---- 核心 API ----
 
 /**
+ * GET /api/query — diagnostic endpoint for browser/health-check access.
+ * The real AI query endpoint is POST /api/query.
+ */
+app.get('/api/query', (req, res) => {
+  res.json({
+    success: true,
+    endpoint: '/api/query',
+    method: 'GET',
+    message: 'AI Gateway is reachable. Use POST /api/query for AI queries.',
+    timestamp: new Date().toISOString()
+  });
+});
+
+/**
  * POST /api/query — 主要 AI 查詢端點
  * Body: { app_id, user_id, query_data, options? }
  * Response: { success, session_id, response, local_path }
