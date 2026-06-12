@@ -906,7 +906,15 @@ app.post('/api/query', async (req, res) => {
     });
   }
 
-  if (query_data && query_data.length > 10000) {
+  // 兼容 messages-only 客戶端：以前 query_data 缺失時會在 substring() 直接拋錯，
+  // Express 請求因此卡到客戶端 timeout，造成各 App 看起來像 AI Gateway 無回覆。
+  const queryText = typeof query_data === 'string' && query_data.trim()
+    ? query_data
+    : (Array.isArray(reqMessages)
+        ? (reqMessages.slice().reverse().find(m => m && m.role === 'user' && m.content)?.content || JSON.stringify(reqMessages))
+        : String(query_data || ''));
+
+  if (queryText.length > 10000) {
     return res.status(400).json({
       success: false,
       error: 'query_data 長度不得超過 10000 字元'
@@ -920,13 +928,13 @@ app.post('/api/query', async (req, res) => {
   const localPath = getOrCreateUserPath(app_id, user_id);
 
   // 記錄 raw data
-  rawDataLogger.log(app_id, user_id, query_data);
+  rawDataLogger.log(app_id, user_id, queryText);
 
   // 記錄 session (初始狀態: queued)
   db.prepare(`
     INSERT INTO sessions (session_id, app_id, user_id, status, query_preview)
     VALUES (?, ?, ?, 'queued', ?)
-  `).run(sessionId, app_id, user_id, query_data.substring(0, 200));
+  `).run(sessionId, app_id, user_id, queryText.substring(0, 200));
 
   try {
     // 取得 API Key（可能排隊）
