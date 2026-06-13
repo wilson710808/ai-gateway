@@ -123,6 +123,12 @@
     <div class="cd">
       <div class="ct">📐 客戶端接入協議</div>
       <p style="color:var(--tx2);margin-bottom:16px;font-size:14px">客戶端透過 HTTPS POST 發送 JSON 封裝的請求，取得 AI 回覆。所有通信均使用 TLS 加密（Let's Encrypt 證書）。</p>
+      <div class="cb" style="border-left:3px solid var(--ac2);margin-bottom:16px">⚠️ 中國大陸網路備用入口
+
+主入口： https://www.herelai.fun/ws/05-ai-gateway/api/query
+備用入口： https://43-135-184-31.sslip.io/ws/05-ai-gateway/api/query
+
+若中國大陸未開 VPN 時 herelai.fun 域名 HTTPS 被中斷，請將客戶端 endpoint 臨時切換到備用入口。備用入口同樣使用 Let's Encrypt 正式 HTTPS 憑證，可直接用於 iOS/Android/Web 客戶端。</div>
       <h3 style="font-size:15px;margin:16px 0 8px;color:var(--ac2)">1️⃣ 請求格式 (Client → Server)</h3>
       <div class="cb">POST https://www.herelai.fun/ws/05-ai-gateway/api/query
 Content-Type: application/json
