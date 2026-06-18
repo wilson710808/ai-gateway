@@ -1203,6 +1203,87 @@ app.delete('/api/admin/summaries/:id', adminAuth, (req, res) => {
   res.json({ success: true, deleted: { id } });
 });
 
+// 批量刪除 Sessions（依 IDs 陣列）
+app.post('/api/admin/sessions/bulk-delete', adminAuth, (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ success: false, error: '需要 ids 陣列' });
+  }
+  // sanitize: only positive integers
+  const cleanIds = ids.map(x => parseInt(x, 10)).filter(n => Number.isInteger(n) && n > 0);
+  if (cleanIds.length === 0) {
+    return res.status(400).json({ success: false, error: 'ids 內容無效' });
+  }
+  const placeholders = cleanIds.map(() => '?').join(',');
+  const result = db.prepare(`DELETE FROM sessions WHERE id IN (${placeholders})`).run(...cleanIds);
+  res.json({ success: true, deleted: result.changes, requested: cleanIds.length });
+});
+
+// 批量刪除 Summaries
+app.post('/api/admin/summaries/bulk-delete', adminAuth, (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ success: false, error: '需要 ids 陣列' });
+  }
+  const cleanIds = ids.map(x => parseInt(x, 10)).filter(n => Number.isInteger(n) && n > 0);
+  if (cleanIds.length === 0) {
+    return res.status(400).json({ success: false, error: 'ids 內容無效' });
+  }
+  const placeholders = cleanIds.map(() => '?').join(',');
+  const result = db.prepare(`DELETE FROM summaries WHERE id IN (${placeholders})`).run(...cleanIds);
+  res.json({ success: true, deleted: result.changes, requested: cleanIds.length });
+});
+
+// 批量刪除 Apps（依 app_id 陣列，連同下游數據一併刪除）
+app.post('/api/admin/apps/bulk-delete', adminAuth, (req, res) => {
+  const { app_ids } = req.body || {};
+  if (!Array.isArray(app_ids) || app_ids.length === 0) {
+    return res.status(400).json({ success: false, error: '需要 app_ids 陣列' });
+  }
+  const cleanIds = app_ids.map(x => String(x || '').trim()).filter(Boolean);
+  if (cleanIds.length === 0) {
+    return res.status(400).json({ success: false, error: 'app_ids 內容無效' });
+  }
+  const placeholders = cleanIds.map(() => '?').join(',');
+  const tx = db.transaction((arr) => {
+    db.prepare(`DELETE FROM summaries WHERE app_id IN (${placeholders})`).run(...arr);
+    db.prepare(`DELETE FROM sessions WHERE app_id IN (${placeholders})`).run(...arr);
+    db.prepare(`DELETE FROM users WHERE app_id IN (${placeholders})`).run(...arr);
+    return db.prepare(`DELETE FROM apps WHERE app_id IN (${placeholders})`).run(...arr).changes;
+  });
+  const deleted = tx(cleanIds);
+  res.json({ success: true, deleted, requested: cleanIds.length });
+});
+
+// 批量刪除 Users（依 items 清單：[{app_id, user_id}, ...]）
+app.post('/api/admin/users/bulk-delete', adminAuth, (req, res) => {
+  const { items } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ success: false, error: '需要 items 陣列' });
+  }
+  const cleanItems = items
+    .filter(it => it && typeof it === 'object')
+    .map(it => ({ app_id: String(it.app_id || '').trim(), user_id: String(it.user_id || '').trim() }))
+    .filter(it => it.app_id && it.user_id);
+  if (cleanItems.length === 0) {
+    return res.status(400).json({ success: false, error: 'items 內容無效' });
+  }
+  const tx = db.transaction((arr) => {
+    let total = 0;
+    const delSummary = db.prepare('DELETE FROM summaries WHERE app_id = ? AND user_id = ?');
+    const delSession = db.prepare('DELETE FROM sessions WHERE app_id = ? AND user_id = ?');
+    const delUser = db.prepare('DELETE FROM users WHERE app_id = ? AND user_id = ?');
+    for (const it of arr) {
+      delSummary.run(it.app_id, it.user_id);
+      delSession.run(it.app_id, it.user_id);
+      total += delUser.run(it.app_id, it.user_id).changes;
+    }
+    return total;
+  });
+  const deleted = tx(cleanItems);
+  res.json({ success: true, deleted, requested: cleanItems.length });
+});
+
 // 批量清空 Sessions
 app.delete('/api/admin/sessions', adminAuth, (req, res) => {
   const { app_id, before_date } = req.query;

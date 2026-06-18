@@ -93,11 +93,15 @@
 
   <!-- 應用 -->
   <div id="p-apps" class="pn">
-    <div class="cd"><div class="ct">已註冊應用</div>
-    <table><thead><tr><th>App ID</th><th>名稱</th><th>用戶數</th><th>創建</th></tr></thead>
+    <div class="cd"><div class="ct">已註冊應用
+      <button class="btn bsm bd" onclick="dABulk()" style="margin-left:8px">🗑️ 批量刪除選取項</button>
+      <span id="aCnt" style="margin-left:10px;color:var(--tx2);font-size:12px">已選 0 項</span></div>
+    <table><thead><tr><th style="width:32px"><input type="checkbox" id="aChkAll" onchange="aToggleAll(this)"></th><th>App ID</th><th>名稱</th><th>用戶數</th><th>創建</th><th>操作</th></tr></thead>
     <tbody id="aT"></tbody></table></div>
-    <div class="cd"><div class="ct">用戶列表</div>
-    <table><thead><tr><th>App</th><th>User ID</th><th>Local Path</th><th>最後活躍</th></tr></thead>
+    <div class="cd"><div class="ct">用戶列表
+      <button class="btn bsm bd" onclick="dUBulk()" style="margin-left:8px">🗑️ 批量刪除選取項</button>
+      <span id="uCnt" style="margin-left:10px;color:var(--tx2);font-size:12px">已選 0 項</span></div>
+    <table><thead><tr><th style="width:32px"><input type="checkbox" id="uChkAll" onchange="uToggleAll(this)"></th><th>App</th><th>User ID</th><th>Local Path</th><th>最後活躍</th><th>操作</th></tr></thead>
     <tbody id="uT"></tbody></table></div>
   </div>
 
@@ -106,15 +110,20 @@
     <div class="cd"><div class="ct">Session 歷史
     <select id="sf" onchange="lS()" style="padding:6px 10px;background:var(--sf);border:1px solid var(--bd);border-radius:6px;color:var(--tx);font-size:12px">
       <option value="">全部</option><option value="completed">completed</option><option value="queued">queued</option><option value="active">active</option><option value="failed">failed</option>
-    </select></div>
-    <table><thead><tr><th>Session ID</th><th>App</th><th>User</th><th>狀態</th><th>查詢</th><th>耗時</th><th>時間</th></tr></thead>
+    </select>
+    <button class="btn bsm bd" onclick="dSeBulk()" style="margin-left:8px">🗑️ 批量刪除選取項</button>
+    <span id="sCnt" style="margin-left:10px;color:var(--tx2);font-size:12px">已選 0 項</span></div>
+    <table><thead><tr><th style="width:32px"><input type="checkbox" id="sChkAll" onchange="sToggleAll(this)"></th><th>Session ID</th><th>App</th><th>User</th><th>狀態</th><th>查詢</th><th>耗時</th><th>時間</th><th>操作</th></tr></thead>
     <tbody id="sT"></tbody></table></div>
   </div>
 
   <!-- 彙整 -->
   <div id="p-summaries" class="pn">
-    <div class="cd"><div class="ct">用戶彙整<button class="btn bp" onclick="tS()">⚡ 手動觸發彙整</button></div>
-    <table><thead><tr><th>App</th><th>User</th><th>週區間</th><th>摘要</th><th>時間</th></tr></thead>
+    <div class="cd"><div class="ct">用戶彙整
+      <button class="btn bp" onclick="tS()">⚡ 手動觸發彙整</button>
+      <button class="btn bsm bd" onclick="dSmBulk()" style="margin-left:8px">🗑️ 批量刪除選取項</button>
+      <span id="smCnt" style="margin-left:10px;color:var(--tx2);font-size:12px">已選 0 項</span></div>
+    <table><thead><tr><th style="width:32px"><input type="checkbox" id="smChkAll" onchange="smToggleAll(this)"></th><th>App</th><th>User</th><th>週區間</th><th>摘要</th><th>時間</th><th>操作</th></tr></thead>
     <tbody id="smT"></tbody></table></div>
   </div>
 
@@ -333,6 +342,11 @@ async function apiD(p) {
   if (r.status === 401) { sessionStorage.removeItem('gw_admin_token'); location.reload(); }
   return r.json();
 }
+async function apiP(p,b) {
+  const r = await fetch(B+p, {method:'POST', headers: authHeaders({'Content-Type':'application/json'}), body:JSON.stringify(b||{})});
+  if (r.status === 401) { sessionStorage.removeItem('gw_admin_token'); location.reload(); }
+  return r.json();
+}
 function mk(k){return!k||k.length<8?k:k.substring(0,6)+'...'+k.slice(-4)}
 function ta(i){if(!i)return'—';const d=Date.now()-new Date(i).getTime();return d<6e4?Math.floor(d/1e3)+'s':d<36e5?Math.floor(d/6e4)+'m':d<864e5?Math.floor(d/36e5)+'h':Math.floor(d/864e5)+'d'}
 function sb(s){const m={completed:'bok',active:'bin',queued:'bwn',failed:'ber',timeout:'ber'};return`<span class="bge ${m[s]||'bin'}">${s}</span>`}
@@ -398,19 +412,44 @@ async function lK(){
 
 async function lA(){
   const[ap,us]=await Promise.all([api('/api/admin/apps'),api('/api/admin/users')]);
-  document.getElementById('aT').innerHTML=ap.data.map(a=>`<tr><td><strong>${a.app_id}</strong></td><td>${a.name}</td><td>${a.user_count}</td><td>${ta(a.created_at)}</td><td><button class="btn bsm bd" onclick="dA('${a.app_id}')">刪除</button></td></tr>`).join('')||'<tr><td colspan="4" class="empty">尚無</td></tr>';
-  document.getElementById('uT').innerHTML=us.data.map(u=>`<tr><td>${u.app_id}</td><td><strong>${u.user_id}</strong></td><td style="font-size:11px;font-family:monospace">${u.local_path||'—'}</td><td>${ta(u.last_active)}</td><td><button class="btn bsm bd" onclick="dU('${u.app_id}','${u.user_id}')">刪除</button></td></tr>`).join('')||'<tr><td colspan="4" class="empty">尚無</td></tr>'
+  document.getElementById('aT').innerHTML=ap.data.map(a=>`<tr><td><input type="checkbox" class="aChk" value="${encodeURIComponent(a.app_id)}" onchange="aUpdateCount()"></td><td><strong>${a.app_id}</strong></td><td>${a.name||'—'}</td><td>${a.user_count}</td><td>${ta(a.created_at)}</td><td><button class="btn bsm bd" onclick="dA('${a.app_id}')">刪除</button></td></tr>`).join('')||'<tr><td colspan="6" class="empty">尚無</td></tr>';
+  document.getElementById('uT').innerHTML=us.data.map(u=>`<tr><td><input type="checkbox" class="uChk" data-app="${encodeURIComponent(u.app_id)}" data-user="${encodeURIComponent(u.user_id)}" onchange="uUpdateCount()"></td><td>${u.app_id}</td><td><strong>${u.user_id}</strong></td><td style="font-size:11px;font-family:monospace">${u.local_path||'—'}</td><td>${ta(u.last_active)}</td><td><button class="btn bsm bd" onclick="dU('${u.app_id}','${u.user_id}')">刪除</button></td></tr>`).join('')||'<tr><td colspan="6" class="empty">尚無</td></tr>';
+  const ac=document.getElementById('aChkAll'); if(ac) ac.checked=false;
+  const uc=document.getElementById('uChkAll'); if(uc) uc.checked=false;
+  aUpdateCount(); uUpdateCount();
 }
+
+function aToggleAll(cb){document.querySelectorAll('.aChk').forEach(c=>{c.checked=cb.checked});aUpdateCount();}
+function aUpdateCount(){const n=document.querySelectorAll('.aChk:checked').length;const el=document.getElementById('aCnt');if(el)el.textContent='已選 '+n+' 項';}
+function uToggleAll(cb){document.querySelectorAll('.uChk').forEach(c=>{c.checked=cb.checked});uUpdateCount();}
+function uUpdateCount(){const n=document.querySelectorAll('.uChk:checked').length;const el=document.getElementById('uCnt');if(el)el.textContent='已選 '+n+' 項';}
 
 async function lS(){
   const st=document.getElementById('sf').value,r=await api('/api/admin/sessions?limit=50'+(st?'&status='+st:''));
-  document.getElementById('sT').innerHTML=r.data.map(s=>`<tr><td style="font-size:11px;font-family:monospace">${s.session_id.substring(0,35)}…</td><td>${s.app_id}</td><td>${s.user_id}</td><td>${sb(s.status)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.query_preview||'—'}</td><td>${s.duration_ms?(s.duration_ms/1e3).toFixed(1)+'s':'—'}</td><td>${ta(s.created_at)}</td><td><button class="btn bsm bd" onclick="dSe(${s.id})">刪除</button></td></tr>`).join('')||'<tr><td colspan="7" class="empty">尚無</td></tr>'
+  document.getElementById('sT').innerHTML=r.data.map(s=>`<tr><td><input type="checkbox" class="sChk" value="${s.id}" onchange="sUpdateCount()"></td><td style="font-size:11px;font-family:monospace">${s.session_id.substring(0,35)}…</td><td>${s.app_id}</td><td>${s.user_id}</td><td>${sb(s.status)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.query_preview||'—'}</td><td>${s.duration_ms?(s.duration_ms/1e3).toFixed(1)+'s':'—'}</td><td>${ta(s.created_at)}</td><td><button class="btn bsm bd" onclick="dSe(${s.id})">刪除</button></td></tr>`).join('')||'<tr><td colspan="9" class="empty">尚無</td></tr>';
+  const ck=document.getElementById('sChkAll'); if(ck) ck.checked=false;
+  sUpdateCount();
+}
+
+function sToggleAll(cb){
+  document.querySelectorAll('.sChk').forEach(c=>{c.checked=cb.checked});
+  sUpdateCount();
+}
+function sUpdateCount(){
+  const n=document.querySelectorAll('.sChk:checked').length;
+  const el=document.getElementById('sCnt');
+  if(el) el.textContent='已選 '+n+' 項';
 }
 
 async function lSm(){
   const r=await api('/api/admin/summaries');
-  document.getElementById('smT').innerHTML=r.data.map(s=>`<tr><td>${s.app_id}</td><td>${s.user_id}</td><td>${s.week_start}~${s.week_end}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(s.summary_text||'').substring(0,100)}…</td><td>${ta(s.created_at)}</td><td><button class="btn bsm bd" onclick="dSm(${s.id})">刪除</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">尚無</td></tr>'
+  document.getElementById('smT').innerHTML=r.data.map(s=>`<tr><td><input type="checkbox" class="smChk" value="${s.id}" onchange="smUpdateCount()"></td><td>${s.app_id}</td><td>${s.user_id}</td><td>${s.week_start}~${s.week_end}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(s.summary_text||'').substring(0,100)}…</td><td>${ta(s.created_at)}</td><td><button class="btn bsm bd" onclick="dSm(${s.id})">刪除</button></td></tr>`).join('')||'<tr><td colspan="7" class="empty">尚無</td></tr>';
+  const sc=document.getElementById('smChkAll'); if(sc) sc.checked=false;
+  smUpdateCount();
 }
+
+function smToggleAll(cb){document.querySelectorAll('.smChk').forEach(c=>{c.checked=cb.checked});smUpdateCount();}
+function smUpdateCount(){const n=document.querySelectorAll('.smChk:checked').length;const el=document.getElementById('smCnt');if(el)el.textContent='已選 '+n+' 項';}
 
 // ---- 新增 Key ----
 function sM(){document.getElementById('akM').style.display='flex';document.getElementById('nKV').value='';document.getElementById('nKL').value='';document.getElementById('nKU').value='https://integrate.api.nvidia.com/v1';document.getElementById('nKUCustom').style.display='none';document.getElementById('nKM').value='meta/llama-3.1-8b-instruct';document.getElementById('nKMCustom').style.display='none';document.getElementById('nKR').value='10'}
@@ -460,7 +499,15 @@ async function uK(){
 
 // ---- 停用/啟用/刪除 ----
 async function tK(id,a){await apiU('/api/admin/keys/'+id,{is_active:a?0:1});lK()}
-async function dK(id){if(confirm('確定刪除?')){await apiD('/api/admin/keys/'+id);lK()}}
+async function dK(id){
+  if(!confirm('確定刪除 Key #'+id+' ？'))return;
+  try{
+    const r=await apiD('/api/admin/keys/'+id);
+    if(r&&r.success){alert('✅ 已刪除 Key #'+id);}
+    else{alert('❌ 刪除失敗'+(r&&r.error?'：'+r.error:''));}
+  }catch(e){alert('❌ 請求錯誤：'+e.message);}
+  lK();
+}
 
 // ---- 彙整 ----
 async function tS(){await apiP('/api/admin/trigger-summary',{});alert('彙整已開始');lSm()}
@@ -470,23 +517,79 @@ lO();
 // ---- 刪除函數 ----
 async function dA(appId){
   if(!confirm('確定刪除 App「'+appId+'」及其所有數據？'))return;
-  const r=await apiD('/api/admin/apps/'+encodeURIComponent(appId));
-  alert(r.success?'已刪除 App: '+appId:'刪除失敗');lA();
+  try{
+    const r=await apiD('/api/admin/apps/'+encodeURIComponent(appId));
+    if(r&&r.success){alert('✅ 已刪除 App: '+appId);}
+    else{alert('❌ 刪除失敗'+(r&&r.error?'：'+r.error:''));}
+  }catch(e){alert('❌ 請求錯誤：'+e.message);}
+  lA();
+}
+async function dABulk(){
+  const ids=Array.from(document.querySelectorAll('.aChk:checked')).map(c=>decodeURIComponent(c.value));
+  if(ids.length===0){alert('請先勾選要刪除的 App');return;}
+  if(!confirm('確定批量刪除 '+ids.length+' 個 App 及其所有下游數據（sessions/users/summaries）？此操作不可逆'))return;
+  try{
+    const r=await apiP('/api/admin/apps/bulk-delete',{app_ids:ids});
+    if(r&&r.success){alert('✅ 已刪除 '+r.deleted+' 個 App（及下游數據）');}
+    else{alert('❌ 批量刪除失敗'+(r&&r.error?'：'+r.error:''));}
+  }catch(e){alert('❌ 請求錯誤：'+e.message);}
+  lA();
 }
 async function dU(appId,userId){
   if(!confirm('確定刪除 User「'+appId+'/'+userId+'」及其所有數據？'))return;
-  const r=await apiD('/api/admin/users/'+encodeURIComponent(appId)+'/'+encodeURIComponent(userId));
-  alert(r.success?'已刪除 User: '+userId:'刪除失敗');lA();
+  try{
+    const r=await apiD('/api/admin/users/'+encodeURIComponent(appId)+'/'+encodeURIComponent(userId));
+    if(r&&r.success){alert('✅ 已刪除 User: '+userId);}
+    else{alert('❌ 刪除失敗'+(r&&r.error?'：'+r.error:''));}
+  }catch(e){alert('❌ 請求錯誤：'+e.message);}
+  lA();
+}
+async function dUBulk(){
+  const items=Array.from(document.querySelectorAll('.uChk:checked')).map(c=>({app_id:decodeURIComponent(c.dataset.app),user_id:decodeURIComponent(c.dataset.user)}));
+  if(items.length===0){alert('請先勾選要刪除的 User');return;}
+  if(!confirm('確定批量刪除 '+items.length+' 個 User 及其所有數據？'))return;
+  try{
+    const r=await apiP('/api/admin/users/bulk-delete',{items});
+    if(r&&r.success){alert('✅ 已刪除 '+r.deleted+' 個 User');}
+    else{alert('❌ 批量刪除失敗'+(r&&r.error?'：'+r.error:''));}
+  }catch(e){alert('❌ 請求錯誤：'+e.message);}
+  lA();
 }
 async function dSe(id){
   if(!confirm('確定刪除 Session #'+id+'？'))return;
   const r=await apiD('/api/admin/sessions/'+id);
-  alert(r.success?'已刪除':'刪除失敗');lS();
+  alert(r.success?'✅ 已刪除':'❌ 刪除失敗'+(r&&r.error?'：'+r.error:''));lS();
+}
+async function dSeBulk(){
+  const ids=Array.from(document.querySelectorAll('.sChk:checked')).map(c=>parseInt(c.value,10)).filter(n=>n>0);
+  if(ids.length===0){alert('請先勾選要刪除的 Session');return;}
+  if(!confirm('確定批量刪除 '+ids.length+' 個 Session？此操作不可逆'))return;
+  try{
+    const r=await apiP('/api/admin/sessions/bulk-delete',{ids});
+    if(r&&r.success){alert('✅ 已刪除 '+r.deleted+' 項');}
+    else{alert('❌ 批量刪除失敗'+(r&&r.error?'：'+r.error:''));}
+  }catch(e){alert('❌ 請求錯誤：'+e.message);}
+  lS();
 }
 async function dSm(id){
   if(!confirm('確定刪除 Summary #'+id+'？'))return;
-  const r=await apiD('/api/admin/summaries/'+id);
-  alert(r.success?'已刪除':'刪除失敗');lSm();
+  try{
+    const r=await apiD('/api/admin/summaries/'+id);
+    if(r&&r.success){alert('✅ 已刪除');}
+    else{alert('❌ 刪除失敗'+(r&&r.error?'：'+r.error:''));}
+  }catch(e){alert('❌ 請求錯誤：'+e.message);}
+  lSm();
+}
+async function dSmBulk(){
+  const ids=Array.from(document.querySelectorAll('.smChk:checked')).map(c=>parseInt(c.value,10)).filter(n=>n>0);
+  if(ids.length===0){alert('請先勾選要刪除的 Summary');return;}
+  if(!confirm('確定批量刪除 '+ids.length+' 個 Summary？'))return;
+  try{
+    const r=await apiP('/api/admin/summaries/bulk-delete',{ids});
+    if(r&&r.success){alert('✅ 已刪除 '+r.deleted+' 項');}
+    else{alert('❌ 批量刪除失敗'+(r&&r.error?'：'+r.error:''));}
+  }catch(e){alert('❌ 請求錯誤：'+e.message);}
+  lSm();
 }
 </script>
 </body>
